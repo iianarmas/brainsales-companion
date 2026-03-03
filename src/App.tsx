@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import "./App.css";
 import { AudioVisualizer } from "./components/AudioVisualizer";
 
@@ -10,7 +10,7 @@ function App() {
   const [levels, setLevels] = useState({ mic: 0, sys: 0 });
 
   const handleClose = async () => {
-    await getCurrentWindow().close();
+    await getCurrentWebviewWindow().close();
   };
 
   useEffect(() => {

@@ -54,12 +54,11 @@ export function AudioVisualizer({ micLevel, sysLevel }: AudioVisualizerProps) {
         ctx.fillStyle = gradient;
         
         // Use roundRect if available (modern browsers)
-        if ('roundRect' in ctx) {
-            // @ts-ignore
-            ctx.beginPath();
-            // @ts-ignore
-            ctx.roundRect(x, y, barWidth, height, barWidth / 2);
-            ctx.fill();
+        const ctxAny = ctx as any;
+        if (typeof ctxAny.roundRect === 'function') {
+            ctxAny.beginPath();
+            ctxAny.roundRect(x, y, barWidth, height, barWidth / 2);
+            ctxAny.fill();
         } else {
             // Fallback rounded bar
             ctx.beginPath();

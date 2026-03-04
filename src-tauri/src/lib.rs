@@ -38,7 +38,8 @@ async fn start_companion(window: tauri::Window, state: tauri::State<'_, AppState
     };
 
     // Start Deepgram stream
-    let api_key = std::env::var("DEEPGRAM_API_KEY").unwrap_or_else(|_| "PLACEHOLDER".to_string());
+    let api_key = std::env::var("DEEPGRAM_API_KEY")
+        .unwrap_or_else(|_| option_env!("DEEPGRAM_API_KEY").unwrap_or("").to_string());
     if api_key == "PLACEHOLDER" {
         println!("Warning: DEEPGRAM_API_KEY is not set, using placeholder.");
     }

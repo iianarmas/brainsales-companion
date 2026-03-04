@@ -5,7 +5,7 @@ pub mod server;
 use tokio::sync::broadcast;
 use audio::capture::AudioCapture;
 use std::sync::Mutex;
-use tauri::Manager;
+use tauri::{Manager, Emitter};
 
 pub struct AppState {
     pub audio_tx: broadcast::Sender<Vec<f32>>,
@@ -123,7 +123,7 @@ pub fn run() {
                 .icon(icon)
                 .menu(&menu)
                 .show_menu_on_left_click(false)
-                .on_menu_event(|app, event| match event.id.as_ref() {
+                .on_menu_event(|app: &tauri::AppHandle, event: tauri::menu::MenuEvent| match event.id.as_ref() {
                     "show" => {
                         if let Some(w) = app.get_webview_window("main") {
                             let _ = w.show();
@@ -135,7 +135,7 @@ pub fn run() {
                     }
                     _ => {}
                 })
-                .on_tray_icon_event(|tray, event| {
+                .on_tray_icon_event(|tray: &tauri::tray::TrayIcon, event: tauri::tray::TrayIconEvent| {
                     if let tauri::tray::TrayIconEvent::Click {
                         button: tauri::tray::MouseButton::Left,
                         button_state: tauri::tray::MouseButtonState::Up,

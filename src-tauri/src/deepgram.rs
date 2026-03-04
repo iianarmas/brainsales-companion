@@ -106,6 +106,7 @@ async fn start_deepgram_stream(
                             for alt in alternatives {
                                 let transcript = alt["transcript"].as_str().unwrap_or("").trim().to_string();
                                 let is_final = json["is_final"].as_bool().unwrap_or(false);
+                                let speech_final = json["speech_final"].as_bool().unwrap_or(false);
 
                                 // In Deepgram multichannel streaming, channel_index is usually in the top-level object
                                 // but can also be in metadata. We check both.
@@ -124,10 +125,11 @@ async fn start_deepgram_stream(
                                 }
 
                                 if is_final && !transcript.is_empty() && transcript != last_transcript {
-                                    println!("FINAL [Speaker {}]: {}", speaker, transcript);
+                                    println!("FINAL [Speaker {}][speech_final={}]: {}", speaker, speech_final, transcript);
                                     let payload = serde_json::json!({
                                         "text": transcript,
-                                        "speaker": speaker
+                                        "speaker": speaker,
+                                        "speechFinal": speech_final
                                     }).to_string();
                                     let _ = transcript_tx_clone.send(payload.clone());
                                     last_transcript = transcript;

@@ -2,9 +2,9 @@ pub mod audio;
 pub mod deepgram;
 pub mod server;
 
-use tokio::sync::broadcast;
+use std::sync::{Arc, Mutex};
+use tokio::sync::{broadcast, watch};
 use audio::capture::AudioCapture;
-use std::sync::Mutex;
 use tauri::{Manager, Emitter};
 
 pub struct AppState {
@@ -13,6 +13,7 @@ pub struct AppState {
     pub transcript_tx: broadcast::Sender<String>,
     pub capture: Mutex<AudioCapture>,
     pub is_running: Mutex<bool>,
+    pub cmd_tx: Arc<watch::Sender<String>>,
 }
 
 #[tauri::command]
@@ -31,13 +32,15 @@ async fn start_companion(window: tauri::Window, state: tauri::State<'_, AppState
     let transcript_tx = state.transcript_tx.clone();
     let transcript_rx = transcript_tx.subscribe();
 
+    let cmd_rx = state.cmd_tx.subscribe();
+    let cmd_tx_for_server = state.cmd_tx.clone();
+
     // Start Audio Capture
     let ((mic_sample_rate, _mic_channels), (_sys_sample_rate, _sys_channels)) = match state.capture.lock().unwrap().start(audio_tx, audio_output_tx) {
         Ok(config) => config,
         Err(e) => return Err(format!("Failed to start audio capture: {}", e)),
     };
 
-    // Start Deepgram stream
     let api_key = std::env::var("DEEPGRAM_API_KEY")
         .unwrap_or_else(|_| option_env!("DEEPGRAM_API_KEY").unwrap_or("").to_string());
     if api_key == "PLACEHOLDER" {
@@ -46,17 +49,16 @@ async fn start_companion(window: tauri::Window, state: tauri::State<'_, AppState
 
     let transcript_tx_clone = transcript_tx.clone();
 
-    // Single Merged Task: Both Mic and System Audio
+    // Deepgram loop: waits for "start" command from web app before connecting to Deepgram
     tauri::async_runtime::spawn(async move {
-        println!("Starting Merged Deepgram task (Mic: {}Hz, Sys: {}Hz)...", mic_sample_rate, _sys_sample_rate);
-        if let Err(e) = deepgram::start_deepgram_stream(window, audio_rx, audio_output_rx, transcript_tx_clone, api_key, mic_sample_rate, _sys_sample_rate).await {
-            eprintln!("Deepgram task exited with error: {}", e);
-        }
+        println!("Deepgram loop ready ({}Hz, {}Hz). Waiting for start command...", mic_sample_rate, _sys_sample_rate);
+        deepgram::run_deepgram_loop(window, audio_rx, audio_output_rx, transcript_tx_clone, api_key, mic_sample_rate, _sys_sample_rate, cmd_rx).await;
     });
 
+    // Local WebSocket server: forwards transcripts to web app, reads control commands
     tauri::async_runtime::spawn(async move {
         println!("Starting local WebSocket server task...");
-        server::start_local_server(transcript_rx).await;
+        server::start_local_server(transcript_rx, cmd_tx_for_server).await;
     });
 
     *is_running = true;
@@ -85,6 +87,8 @@ pub fn run() {
     let (audio_tx, _) = broadcast::channel::<Vec<f32>>(1000);
     let (audio_output_tx, _) = broadcast::channel::<Vec<f32>>(1000);
     let (transcript_tx, _) = broadcast::channel::<String>(1000);
+    let (cmd_tx, _) = watch::channel("idle".to_string());
+    let cmd_tx = Arc::new(cmd_tx);
 
     tauri::Builder::default()
         .manage(AppState {
@@ -93,6 +97,7 @@ pub fn run() {
             transcript_tx,
             capture: Mutex::new(AudioCapture::new()),
             is_running: Mutex::new(false),
+            cmd_tx,
         })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_autostart::init(

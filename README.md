@@ -33,11 +33,6 @@ cd brainsales-companion
 npm install
 ```
 
-Create `src-tauri/.env`:
-```env
-DEEPGRAM_API_KEY=your_key_here
-```
-
 ```bash
 npm run tauri dev
 ```

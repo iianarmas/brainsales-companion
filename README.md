@@ -1,68 +1,71 @@
-# Brainsales Companion
+# BrainSales Companion
 
-Brainsales Companion is a lightweight, production-ready desktop application designed to bridge the gap between local audio capture and the Brainsales web ecosystem. It facilitates real-time transcription and AI-driven conversation highlights for sales professionals.
+A lightweight desktop companion app for [BrainSales](https://brainsales.app) that listens to your calls in real-time and powers AI-driven navigation suggestions.
 
-## 🚀 Key Features
+## Features
 
-- **Mini-Player Mode**: A compact, non-intrusive UI (320x200) that stays "Always on Top" during your calls.
-- **Dynamic Organic Visualizer**: Real-time wave feedback for both Microphone (Indigo) and System Audio (Emerald).
-- **Deepgram Integration**: High-performance, low-latency transcription using Deepgram's Nova-2 model.
-- **WebSocket Bridge**: Automatically serves transcribed data to the local web app on Port 4141.
-- **Premium Aesthetic**: Minimalist, professional design optimized for high-performance workflows.
+- **Always-on-top mini player** — compact 320×200 window that stays visible during calls
+- **Real-time audio visualizer** — live feedback for microphone and system audio
+- **Deepgram transcription** — low-latency speech-to-text via Deepgram Nova-2
+- **WebSocket bridge** — streams transcripts to the BrainSales web app on port 4141
+- **System tray** — minimize to tray instead of closing; starts automatically on Windows login
+- **Auto-update** — notifies you when a new version is available and installs it in one click
 
-## 🛠️ Tech Stack
+## Installation (for users)
 
-- **Core**: [Tauri](https://tauri.app/) (Rust-based secure app framework)
-- **Frontend**: [React](https://react.dev/) + [TypeScript](https://www.typescriptlang.org/)
-- **Build Tool**: [Vite](https://vite.dev/)
-- **Transcription**: [Deepgram API](https://deepgram.com/)
-- **Audio Capture**: [CPAL](https://github.com/RustAudio/cpal)
+Download the latest installer from the [Releases](https://github.com/iianarmas/brainsales-companion/releases/latest) page.
 
-## 🚦 Getting Started
+> **Windows SmartScreen warning?** Click **More info → Run anyway**. The app is unsigned during the testing phase but is safe to install.
+
+## Development Setup
 
 ### Prerequisites
 
-1. **Rust**: [Install Rust](https://www.rust-lang.org/tools/install)
-2. **Node.js**: [Install Node.js](https://nodejs.org/)
-3. **Tauri Dependencies**: [Follow the Tauri Quick Start](https://tauri.app/v1/guides/getting-started/prerequisites)
+- [Rust](https://www.rust-lang.org/tools/install)
+- [Node.js](https://nodejs.org/)
+- [Tauri prerequisites](https://tauri.app/start/prerequisites/)
 
-### Installation
+### Getting started
 
-1. Clone the repository:
-   ```bash
-   git clone <repository-url>
-   cd brainsales-companion
-   ```
+```bash
+git clone https://github.com/iianarmas/brainsales-companion
+cd brainsales-companion
+npm install
+```
 
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
+Create `src-tauri/.env`:
+```env
+DEEPGRAM_API_KEY=your_key_here
+```
 
-3. Setup environment variables:
-   Create a `.env` file in `src-tauri/.env`:
-   ```env
-   DEEPGRAM_API_KEY=your_api_key_here
-   ```
-
-### Development
-
-Run the application in development mode:
 ```bash
 npm run tauri dev
 ```
 
-### Building for Production
+### Building
 
-To create a production build:
 ```bash
 npm run tauri build
 ```
 
-## 🔒 Security
+## Releasing a new version
 
-This application utilizes Tauri's secure bridge to ensure that local audio capture and transcription data are handled with minimal exposure to external risks.
+1. Bump `version` in `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml`
+2. Commit, tag, and push:
+   ```powershell
+   git add .
+   git commit -m "chore: bump version to x.x.x"
+   git tag vx.x.x
+   git push
+   git push --tags
+   ```
+3. GitHub Actions builds the installer and publishes a GitHub Release automatically.
+4. Users already running the app will be prompted to update on next launch.
 
----
+## Tech Stack
 
-Built by the **Brainsales Team**.
+- [Tauri v2](https://tauri.app/) — Rust-based desktop framework
+- [React](https://react.dev/) + [TypeScript](https://www.typescriptlang.org/)
+- [Vite](https://vite.dev/)
+- [Deepgram API](https://deepgram.com/) — speech-to-text
+- [CPAL](https://github.com/RustAudio/cpal) — cross-platform audio capture

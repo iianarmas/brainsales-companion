@@ -139,3 +139,38 @@ body {
   color: #94a3b8;
   font-weight: 500;
 }
+
+.footer.update-banner {
+  justify-content: space-between;
+  gap: 0.5rem;
+  background: #eff6ff;
+  border-radius: 8px;
+  padding: 0.375rem 0.625rem;
+}
+
+.footer.update-banner .helper-text {
+  color: #3b82f6;
+  font-weight: 600;
+}
+
+.update-btn {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: white;
+  background: #3b82f6;
+  border: none;
+  border-radius: 6px;
+  padding: 0.25rem 0.625rem;
+  cursor: pointer;
+  transition: opacity 0.15s;
+  white-space: nowrap;
+}
+
+.update-btn:hover {
+  opacity: 0.85;
+}
+
+.update-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

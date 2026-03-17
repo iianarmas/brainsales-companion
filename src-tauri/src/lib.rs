@@ -11,13 +11,14 @@ pub struct AppState {
     pub audio_tx: broadcast::Sender<Vec<f32>>,
     pub audio_output_tx: broadcast::Sender<Vec<f32>>,
     pub transcript_tx: broadcast::Sender<String>,
+    pub to_browser_tx: broadcast::Sender<String>,
     pub capture: Mutex<AudioCapture>,
     pub is_running: Mutex<bool>,
     pub cmd_tx: Arc<watch::Sender<String>>,
 }
 
 #[tauri::command]
-async fn start_companion(window: tauri::Window, state: tauri::State<'_, AppState>) -> Result<String, String> {
+async fn start_companion(window: tauri::Window, state: tauri::State<'_, AppState>, app: tauri::AppHandle) -> Result<String, String> {
     let mut is_running = state.is_running.lock().unwrap();
     if *is_running {
         return Ok("Companion already running".to_string());
@@ -31,6 +32,8 @@ async fn start_companion(window: tauri::Window, state: tauri::State<'_, AppState
 
     let transcript_tx = state.transcript_tx.clone();
     let transcript_rx = transcript_tx.subscribe();
+
+    let to_browser_tx = state.to_browser_tx.clone();
 
     let cmd_rx = state.cmd_tx.subscribe();
     let cmd_tx_for_server = state.cmd_tx.clone();
@@ -55,14 +58,20 @@ async fn start_companion(window: tauri::Window, state: tauri::State<'_, AppState
         deepgram::run_deepgram_loop(window, audio_rx, audio_output_rx, transcript_tx_clone, api_key, mic_sample_rate, _sys_sample_rate, cmd_rx).await;
     });
 
-    // Local WebSocket server: forwards transcripts to web app, reads control commands
+    // Local WebSocket server: forwards transcripts to web app, reads control commands, handles sync messages
     tauri::async_runtime::spawn(async move {
         println!("Starting local WebSocket server task...");
-        server::start_local_server(transcript_rx, cmd_tx_for_server).await;
+        server::start_local_server(transcript_rx, to_browser_tx, cmd_tx_for_server, app).await;
     });
 
     *is_running = true;
     Ok("Companion started".to_string())
+}
+
+#[tauri::command]
+async fn send_to_browser(state: tauri::State<'_, AppState>, payload: String) -> Result<(), String> {
+    state.to_browser_tx.send(payload).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -87,6 +96,7 @@ pub fn run() {
     let (audio_tx, _) = broadcast::channel::<Vec<f32>>(1000);
     let (audio_output_tx, _) = broadcast::channel::<Vec<f32>>(1000);
     let (transcript_tx, _) = broadcast::channel::<String>(1000);
+    let (to_browser_tx, _) = broadcast::channel::<String>(100);
     let (cmd_tx, _) = watch::channel("idle".to_string());
     let cmd_tx = Arc::new(cmd_tx);
 
@@ -95,6 +105,7 @@ pub fn run() {
             audio_tx,
             audio_output_tx,
             transcript_tx,
+            to_browser_tx,
             capture: Mutex::new(AudioCapture::new()),
             is_running: Mutex::new(false),
             cmd_tx,
@@ -106,15 +117,15 @@ pub fn run() {
         ))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
-            // Position window at bottom-right of primary monitor
+            // Position window at bottom-right of primary monitor (fallback; JS restores saved position)
             let window = app.get_webview_window("main").unwrap();
             if let Ok(Some(monitor)) = window.primary_monitor() {
                 let monitor_size = monitor.size();
                 let monitor_pos = monitor.position();
                 let window_size = window.outer_size().unwrap();
 
-                let x = monitor_pos.x + (monitor_size.width as i32 - window_size.width as i32);
-                let y = monitor_pos.y + (monitor_size.height as i32 - window_size.height as i32);
+                let x = monitor_pos.x + (monitor_size.width as i32 - window_size.width as i32) - 16;
+                let y = monitor_pos.y + (monitor_size.height as i32 - window_size.height as i32) - 48;
 
                 let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
             }
@@ -183,7 +194,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![start_companion, install_update])
+        .invoke_handler(tauri::generate_handler![start_companion, send_to_browser, install_update])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

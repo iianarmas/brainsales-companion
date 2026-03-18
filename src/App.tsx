@@ -2,7 +2,7 @@ import { useEffect, useState, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { PhysicalPosition } from "@tauri-apps/api/dpi";
+import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/dpi";
 import "./App.css";
 import { AudioVisualizer } from "./components/AudioVisualizer";
 
@@ -25,6 +25,7 @@ interface AISuggestion {
   confidence: "high" | "medium";
   reasoning: string;
   phraseHash: string;
+  autoNavigated?: boolean;
 }
 
 interface TranscriptLine {
@@ -33,7 +34,13 @@ interface TranscriptLine {
   speaker: number;
 }
 
+interface OpeningScript {
+  id: string;
+  title: string;
+}
+
 type ViewMode = "script" | "transcript" | "actions";
+type Theme = "dark" | "darker" | "slate";
 
 const OPACITY_LEVELS = [
   { label: "S", title: "Solid (96%)", value: 0.96 },
@@ -49,8 +56,36 @@ function getInitialOpacity(): number {
   }
 }
 
+function getInitialTheme(): Theme {
+  try {
+    return (localStorage.getItem("companion_theme") as Theme) ?? "dark";
+  } catch {
+    return "dark";
+  }
+}
+
+function getInitialFontScale(): number {
+  try {
+    return parseFloat(localStorage.getItem("companion_font_scale") ?? "1.0");
+  } catch {
+    return 1.0;
+  }
+}
+
+const OUTCOME_LABELS: Record<string, string> = {
+  meeting_set: "Meeting Set",
+  follow_up: "Follow Up",
+  send_info: "Send Info",
+  not_interested: "Not Interested",
+  wrong_person: "Wrong Person",
+  no_answer: "No Answer",
+  left_voicemail: "Left Voicemail",
+  disconnected: "Disconnected",
+  redirected: "Redirected",
+};
+
 function App() {
-  const [isActive, setIsActive] = useState(false);
+  const [, setIsActive] = useState(false);
   const [levels, setLevels] = useState({ mic: 0, sys: 0 });
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
   const [updating, setUpdating] = useState(false);
@@ -64,10 +99,33 @@ function App() {
   const [transcriptionState, setTranscriptionState] = useState<RecordingState>('idle');
   const [isPracticeMode, setIsPracticeMode] = useState(false);
   const [outcome, setOutcome] = useState<string | null>(null);
+  const [outcomeSource, setOutcomeSource] = useState<string | null>(null);
   const [deepgramState, setDeepgramState] = useState<'idle' | 'streaming'>('idle');
   const [audioDevices, setAudioDevices] = useState<{ inputs: string[]; outputs: string[] }>({ inputs: [], outputs: [] });
   const [selectedInput, setSelectedInput] = useState<string | null>(localStorage.getItem('preferred_input'));
   const [selectedOutput, setSelectedOutput] = useState<string | null>(localStorage.getItem('preferred_output'));
+  const [micGain, setMicGain] = useState<number>(() => {
+    const saved = localStorage.getItem('mic_gain');
+    return saved ? parseFloat(saved) : 1.0;
+  });
+
+  // Opening script selector state
+  const [openingScripts, setOpeningScripts] = useState<OpeningScript[]>([]);
+  const [activeFlowId, setActiveFlowId] = useState<string | null>(null);
+
+  // AI correction mode
+  const [showCorrectionPicker, setShowCorrectionPicker] = useState(false);
+
+  // Theme and font scale
+  const [theme, setTheme] = useState<Theme>(getInitialTheme);
+  const [fontScale, setFontScale] = useState<number>(getInitialFontScale);
+
+  // Co-Pilot active state (synced from web app)
+  const [isCompanionActive, setIsCompanionActive] = useState(false);
+
+  // In-overlay "logged" toast
+  const [loggedLabel, setLoggedLabel] = useState<string | null>(null);
+  const loggedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   const appWindow = getCurrentWebviewWindow();
@@ -78,18 +136,33 @@ function App() {
     try { localStorage.setItem("companion_opacity", String(opacity)); } catch {}
   }, [opacity]);
 
-  // Position persistence
+  // Apply theme class and CSS variable
   useEffect(() => {
-    // Restore saved position on startup
+    document.documentElement.setAttribute("data-theme", theme);
+    try { localStorage.setItem("companion_theme", theme); } catch {}
+  }, [theme]);
+
+  // Apply font scale via CSS zoom (scales all content uniformly)
+  useEffect(() => {
+    (document.documentElement.style as any).zoom = String(fontScale);
+    try { localStorage.setItem("companion_font_scale", String(fontScale)); } catch {}
+  }, [fontScale]);
+
+  // Position + size persistence
+  useEffect(() => {
     try {
       const savedPos = localStorage.getItem("companion_pos");
       if (savedPos) {
         const { x, y } = JSON.parse(savedPos);
         void appWindow.setPosition(new PhysicalPosition(x, y));
       }
+      const savedSize = localStorage.getItem("companion_size");
+      if (savedSize) {
+        const { w, h } = JSON.parse(savedSize);
+        void appWindow.setSize(new PhysicalSize(w, h));
+      }
     } catch {}
 
-    // Save position whenever the window moves
     const unlistenMove = appWindow.listen("tauri://move", async () => {
       try {
         const pos = await appWindow.outerPosition();
@@ -97,7 +170,17 @@ function App() {
       } catch {}
     });
 
-    return () => { unlistenMove.then(u => u()); };
+    const unlistenResize = appWindow.listen("tauri://resize", async () => {
+      try {
+        const size = await appWindow.outerSize();
+        localStorage.setItem("companion_size", JSON.stringify({ w: size.width, h: size.height }));
+      } catch {}
+    });
+
+    return () => {
+      unlistenMove.then(u => u());
+      unlistenResize.then(u => u());
+    };
   }, []);
 
   // Auto-scroll transcript
@@ -122,7 +205,9 @@ function App() {
   useEffect(() => {
     const startCompanion = async () => {
       try {
-        await invoke("start_companion");
+        const savedGain = localStorage.getItem('mic_gain');
+        const gain = savedGain ? parseFloat(savedGain) : 1.0;
+        await invoke("start_companion", { gain });
         setIsActive(true);
       } catch {
         setIsActive(false);
@@ -143,11 +228,15 @@ function App() {
     });
 
     const unlistenAI = listen<AISuggestion>("ai_suggestion", (e) => {
+      console.log("Companion: AI Suggestion received:", e.payload);
       setAiSuggestion(e.payload);
+      setShowCorrectionPicker(false);
     });
 
     const unlistenClear = listen<void>("clear_suggestion", () => {
+      console.log("Companion: Clear Suggestion received");
       setAiSuggestion(null);
+      setShowCorrectionPicker(false);
     });
 
     const unlistenTranscript = listen<TranscriptLine>("transcript", (e) => {
@@ -155,17 +244,35 @@ function App() {
     });
 
     const unlistenRecording = listen<{ state: RecordingState }>('recording_state', (e) => {
+      console.log("Companion: Recording State sync:", e.payload.state);
       setTranscriptionState(e.payload.state);
+      if (e.payload.state === 'idle') {
+        setTranscriptLines([]);
+      }
     });
     const unlistenPractice = listen<{ enabled: boolean }>('practice_mode_state', (e) => {
       setIsPracticeMode(e.payload.enabled);
     });
-    const unlistenOutcome = listen<{ outcome: string | null }>('outcome_state', (e) => {
+    const unlistenOutcome = listen<{ outcome: string | null; outcomeSource?: string | null }>('outcome_state', (e) => {
       setOutcome(e.payload.outcome);
+      setOutcomeSource(e.payload.outcomeSource ?? null);
     });
 
     const unlistenDG = listen<{ state: 'idle' | 'streaming' }>('deepgram_state', (e) => {
       setDeepgramState(e.payload.state);
+    });
+
+    const unlistenOpeningScripts = listen<{ scripts: OpeningScript[]; activeFlowId: string | null }>('opening_scripts', (e) => {
+      setOpeningScripts(e.payload.scripts);
+      setActiveFlowId(e.payload.activeFlowId);
+    });
+
+    const unlistenActiveFlow = listen<{ flowId: string | null }>('active_flow_changed', (e) => {
+      setActiveFlowId(e.payload.flowId);
+    });
+
+    const unlistenCompanion = listen<{ active: boolean }>('companion_state', (e) => {
+      setIsCompanionActive(e.payload.active);
     });
 
     return () => {
@@ -179,6 +286,9 @@ function App() {
       unlistenPractice.then(u => u());
       unlistenOutcome.then(u => u());
       unlistenDG.then(u => u());
+      unlistenOpeningScripts.then(u => u());
+      unlistenActiveFlow.then(u => u());
+      unlistenCompanion.then(u => u());
     };
   }, []);
 
@@ -203,19 +313,64 @@ function App() {
       payload: JSON.stringify({ type: "ai_feedback", action, phraseHash: aiSuggestion.phraseHash }),
     });
     if (action === "accept") {
-      handleNavigate(aiSuggestion.nodeId);
+      if (!aiSuggestion.autoNavigated) {
+        handleNavigate(aiSuggestion.nodeId);
+      }
+      setShowCorrectionPicker(false);
+      setAiSuggestion(null);
+    } else {
+      setShowCorrectionPicker(true);
     }
+  };
+
+  const handleAICorrection = (nodeId: string) => {
+    if (!aiSuggestion) return;
+    void invoke("send_to_browser", {
+      payload: JSON.stringify({
+        type: "ai_feedback",
+        action: "reject",
+        phraseHash: aiSuggestion.phraseHash,
+        correctedNodeId: nodeId,
+      }),
+    });
+    handleNavigate(nodeId);
     setAiSuggestion(null);
+    setShowCorrectionPicker(false);
+  };
+
+  const handleDismissSuggestion = () => {
+    if (!aiSuggestion) return;
+    void invoke("send_to_browser", {
+      payload: JSON.stringify({ type: "ai_feedback", action: "reject", phraseHash: aiSuggestion.phraseHash }),
+    });
+    setAiSuggestion(null);
+    setShowCorrectionPicker(false);
   };
 
   const handleControl = (cmd: 'start' | 'pause' | 'stop') => {
+    if (cmd === 'start') setTranscriptionState('recording');
+    else if (cmd === 'pause') setTranscriptionState('paused');
+    else if (cmd === 'stop') {
+      setTranscriptionState('idle');
+      setOutcome(null);
+      setOutcomeSource(null);
+      setTranscriptLines([]);
+    }
     void invoke('send_to_browser', { payload: JSON.stringify({ type: 'control', command: cmd }) });
   };
 
-  const handleSetOutcome = (o: string) => {
-    const next = outcome === o ? null : o;
-    void invoke('send_to_browser', { payload: JSON.stringify({ type: 'set_outcome', outcome: next }) });
-    setOutcome(next);
+  // Log outcome: tells web app to set outcome + stop + persist session + reset
+  const handleLogOutcome = (o: string) => {
+    setOutcome(o);
+    void invoke('send_to_browser', { payload: JSON.stringify({ type: 'log_outcome', outcome: o }) });
+    // Show brief "✓ Logged" feedback in overlay
+    if (loggedTimerRef.current) clearTimeout(loggedTimerRef.current);
+    setLoggedLabel(OUTCOME_LABELS[o] ?? o);
+    loggedTimerRef.current = setTimeout(() => setLoggedLabel(null), 2500);
+  };
+
+  const handleNextCall = () => {
+    void invoke('send_to_browser', { payload: JSON.stringify({ type: 'next_call' }) });
   };
 
   const handleTogglePracticeMode = () => {
@@ -226,6 +381,18 @@ function App() {
 
   const handleResetAIContext = () => {
     void invoke('send_to_browser', { payload: JSON.stringify({ type: 'reset_ai_context' }) });
+  };
+
+  const handleChangeFlow = (flowId: string) => {
+    setActiveFlowId(flowId);
+    setTranscriptLines([]);
+    void invoke('send_to_browser', {
+      payload: JSON.stringify({ type: 'set_active_flow', flowId }),
+    });
+  };
+
+  const handleToggleCopilot = () => {
+    void invoke('send_to_browser', { payload: JSON.stringify({ type: 'toggle_companion' }) });
   };
 
   const fetchDevices = async () => {
@@ -258,6 +425,16 @@ function App() {
     }
   };
 
+  const handleSetMicGain = async (gain: number) => {
+    setMicGain(gain);
+    localStorage.setItem('mic_gain', String(gain));
+    try {
+      await invoke('set_mic_gain', { gain });
+    } catch (e) {
+      console.error('Failed to set mic gain:', e);
+    }
+  };
+
   const cycleOpacity = () => {
     const idx = OPACITY_LEVELS.findIndex(l => Math.abs(l.value - opacity) < 0.05);
     const next = OPACITY_LEVELS[(idx + 1) % OPACITY_LEVELS.length];
@@ -266,9 +443,10 @@ function App() {
 
   const opacityBtn = OPACITY_LEVELS.find(l => Math.abs(l.value - opacity) < 0.05) ?? OPACITY_LEVELS[0];
 
+  const showNextCall = outcome && outcomeSource === 'auto' && !isPracticeMode;
+
   return (
     <div className="overlay-root">
-      {/* Header — drag region */}
       <header className="overlay-header" data-tauri-drag-region>
         <div className="status-pill" data-tauri-drag-region>
           <div className={`status-dot ${
@@ -280,34 +458,28 @@ function App() {
         </div>
         <div className="header-controls">
           <div className="view-switcher">
-            <button
-              className={`view-btn ${view === "script" ? "active" : ""}`}
-              onClick={() => setView("script")}
-            >Script</button>
-            <button
-              className={`view-btn ${view === "transcript" ? "active" : ""}`}
-              onClick={() => setView("transcript")}
-            >Transcript</button>
-            <button
-              className={`view-btn ${view === "actions" ? "active" : ""}`}
-              onClick={() => setView("actions")}
-            >Actions</button>
+            <button className={`view-btn ${view === "script" ? "active" : ""}`} onClick={() => setView("script")}>Script</button>
+            <button className={`view-btn ${view === "transcript" ? "active" : ""}`} onClick={() => setView("transcript")}>Transcript</button>
+            <button className={`view-btn ${view === "actions" ? "active" : ""}`} onClick={() => setView("actions")}>⚙</button>
           </div>
           <button
-            className="opacity-btn"
-            onClick={cycleOpacity}
-            title={opacityBtn.title}
-          >{opacityBtn.label}</button>
+            className={`copilot-btn ${isCompanionActive ? 'active' : ''}`}
+            onClick={handleToggleCopilot}
+            title={isCompanionActive ? "Co-Pilot is open" : "Open Co-Pilot"}
+          >🤖</button>
+          <button className="opacity-btn" onClick={cycleOpacity} title={opacityBtn.title}>{opacityBtn.label}</button>
           <button className="close-btn" onClick={handleClose} title="Minimize to tray">✕</button>
         </div>
       </header>
 
       {/* AI Suggestion Chip */}
       {aiSuggestion && (
-        <div className="ai-chip">
+        <div className={`ai-chip ${aiSuggestion.autoNavigated ? 'auto-nav' : ''}`}>
           <div className="ai-chip-top">
             <span className="ai-chip-icon">✦</span>
-            <span className="ai-chip-node">{aiSuggestion.title}</span>
+            <span className="ai-chip-node">
+              {aiSuggestion.autoNavigated ? `AI Navigated to: ${aiSuggestion.title}` : aiSuggestion.title}
+            </span>
             <span className={`ai-chip-conf ${aiSuggestion.confidence}`}>
               {aiSuggestion.confidence}
             </span>
@@ -316,72 +488,148 @@ function App() {
             <div className="ai-chip-reasoning">{aiSuggestion.reasoning}</div>
           )}
           <div className="ai-chip-btns">
-            <button className="ai-accept-btn" onClick={() => handleAIFeedback("accept")}>
-              ✓ Navigate
+            <button className="ai-eval-btn like" onClick={() => handleAIFeedback("accept")}>
+              <span className="eval-icon">👍</span> {aiSuggestion.autoNavigated ? 'Correct' : 'Navigate'}
             </button>
-            <button className="ai-reject-btn" onClick={() => handleAIFeedback("reject")}>
-              ✗ No
+            <button className="ai-eval-btn dislike" onClick={() => handleAIFeedback("reject")}>
+              <span className="eval-icon">👎</span> {aiSuggestion.autoNavigated ? 'Wrong' : 'Incorrect'}
             </button>
+            <button className="ai-dismiss-btn" onClick={handleDismissSuggestion}>✕</button>
           </div>
+          {showCorrectionPicker && currentNode && (
+            <div className="ai-correction">
+              <div className="ai-correction-label">Pick correct node:</div>
+              <div className="ai-correction-list">
+                {currentNode.responses.map((r, i) => (
+                  <button key={i} className="ai-correction-btn" onClick={() => handleAICorrection(r.nextNode)}>
+                    {r.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
-      {/* Main content area */}
+      {/* Call logged toast */}
+      {loggedLabel && (
+        <div className="logged-toast">✓ Logged — {loggedLabel}</div>
+      )}
+
       <div className="overlay-body">
         {view === "script" ? (
-          currentNode ? (
-            <div className="script-view">
-              <div className="node-title">{currentNode.title}</div>
-              <div className="node-script">{currentNode.script}</div>
-
-              {(currentNode.keyPoints ?? []).length > 0 && (
-                <div className="section">
-                  <button className="section-header" onClick={() => setShowKeyPoints(v => !v)}>
-                    <span>Key Points</span>
-                    <span className="chevron">{showKeyPoints ? "▲" : "▼"}</span>
-                  </button>
-                  {showKeyPoints && (
-                    <ul className="section-list">
-                      {currentNode.keyPoints!.map((kp, i) => <li key={i}>{kp}</li>)}
-                    </ul>
-                  )}
-                </div>
-              )}
-
-              {(currentNode.warnings ?? []).length > 0 && (
-                <div className="section warning-section">
-                  <button className="section-header" onClick={() => setShowWarnings(v => !v)}>
-                    <span>⚠ Warnings</span>
-                    <span className="chevron">{showWarnings ? "▲" : "▼"}</span>
-                  </button>
-                  {showWarnings && (
-                    <ul className="section-list">
-                      {currentNode.warnings!.map((w, i) => <li key={i}>{w}</li>)}
-                    </ul>
-                  )}
-                </div>
-              )}
-
-              {currentNode.responses.length > 0 && (
-                <div className="responses">
-                  {currentNode.responses.map((r, i) => (
-                    <button
-                      key={i}
-                      className="response-btn"
-                      onClick={() => handleNavigate(r.nextNode)}
-                    >
-                      {r.label}
-                    </button>
+          <>
+            {openingScripts.length > 1 && (
+              <div className="flow-selector">
+                <label className="flow-selector-label">Opening Script</label>
+                <select
+                  className="flow-selector-select"
+                  value={activeFlowId ?? ''}
+                  onChange={e => handleChangeFlow(e.target.value)}
+                >
+                  {openingScripts.map(s => (
+                    <option key={s.id} value={s.id}>{s.title}</option>
                   ))}
+                </select>
+              </div>
+            )}
+
+            {currentNode ? (
+              <div className="script-view">
+                <div className="node-title">{currentNode.title}</div>
+                <div className="node-script">{currentNode.script}</div>
+
+                {(currentNode.keyPoints ?? []).length > 0 && (
+                  <div className="section">
+                    <button className="section-header" onClick={() => setShowKeyPoints(v => !v)}>
+                      <span>Key Points</span>
+                      <span className="chevron">{showKeyPoints ? "▲" : "▼"}</span>
+                    </button>
+                    {showKeyPoints && (
+                      <ul className="section-list">
+                        {currentNode.keyPoints!.map((kp, i) => <li key={i}>{kp}</li>)}
+                      </ul>
+                    )}
+                  </div>
+                )}
+
+                {(currentNode.warnings ?? []).length > 0 && (
+                  <div className="section warning-section">
+                    <button className="section-header" onClick={() => setShowWarnings(v => !v)}>
+                      <span>⚠ Warnings</span>
+                      <span className="chevron">{showWarnings ? "▲" : "▼"}</span>
+                    </button>
+                    {showWarnings && (
+                      <ul className="section-list">
+                        {currentNode.warnings!.map((w, i) => <li key={i}>{w}</li>)}
+                      </ul>
+                    )}
+                  </div>
+                )}
+
+                {currentNode.responses.length > 0 && (
+                  <div className="responses">
+                    {currentNode.responses.map((r, i) => (
+                      <button key={i} className="response-btn" onClick={() => handleNavigate(r.nextNode)}>
+                        {r.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {/* Next Call button — appears when AI auto-detected an outcome */}
+                {showNextCall && (
+                  <button className="next-call-btn" onClick={handleNextCall}>
+                    ↩ Next Call
+                  </button>
+                )}
+
+                {/* Outcome logging rows */}
+                <div className="outcome-log-section">
+                  <div className="outcome-log-row dead-end-row">
+                    <button className="log-btn dead-end" onClick={() => handleLogOutcome('no_answer')}>📵 No Answer</button>
+                    <button className="log-btn dead-end" onClick={() => {
+                      if (currentNode?.voicemailNodeId) handleNavigate(currentNode.voicemailNodeId);
+                      handleLogOutcome('left_voicemail');
+                    }}>📨 Voicemail</button>
+                    <button className="log-btn dead-end" onClick={() => handleLogOutcome('disconnected')}>✕ Discon.</button>
+                    <button className="log-btn dead-end" onClick={() => handleLogOutcome('redirected')}>↗ Redir.</button>
+                  </div>
+                  <div className="outcome-log-row success-row">
+                    <button className="log-btn success" onClick={() => handleLogOutcome('meeting_set')}>✅ Meeting</button>
+                    <button className="log-btn success" onClick={() => handleLogOutcome('follow_up')}>📅 Follow Up</button>
+                    <button className="log-btn success" onClick={() => handleLogOutcome('send_info')}>📄 Info</button>
+                    <button className="log-btn success" onClick={() => handleLogOutcome('not_interested')}>🚫 No</button>
+                    <button className="log-btn success" onClick={() => handleLogOutcome('wrong_person')}>👥 Wrong</button>
+                  </div>
                 </div>
-              )}
+              </div>
+            ) : (
+              <div className="empty-state">
+                <span className="empty-icon">📋</span>
+                <span>Waiting for call to start…</span>
+              </div>
+            )}
+
+            <div className="compact-controls">
+              <div className="compact-controls-left">
+                <button className="compact-ctrl-btn start" onClick={() => handleControl('start')} disabled={transcriptionState === 'recording'}>▶</button>
+                <button className="compact-ctrl-btn pause" onClick={() => handleControl('pause')} disabled={transcriptionState !== 'recording'}>⏸</button>
+                <button className="compact-ctrl-btn stop" onClick={() => handleControl('stop')} disabled={transcriptionState === 'idle'}>■</button>
+                <span className="compact-state-dot">
+                  {transcriptionState === 'recording' && deepgramState === 'streaming' && <span className="mini-dot active" />}
+                  {transcriptionState === 'recording' && deepgramState !== 'streaming' && <span className="mini-dot listening" />}
+                  {transcriptionState === 'paused' && <span className="mini-dot paused" />}
+                </span>
+              </div>
+              <div className="compact-controls-right">
+                {currentNode?.gatekeeperNodeId && (
+                  <button className="compact-quick-btn" onClick={() => handleNavigate(currentNode.gatekeeperNodeId!)} title="Gatekeeper">🛡</button>
+                )}
+                <button className="compact-quick-btn" onClick={handleResetAIContext} title="New Contact">👤</button>
+              </div>
             </div>
-          ) : (
-            <div className="empty-state">
-              <span className="empty-icon">📋</span>
-              <span>Waiting for call to start…</span>
-            </div>
-          )
+          </>
         ) : view === "transcript" ? (
           <div className="transcript-view">
             {transcriptLines.length === 0 ? (
@@ -401,153 +649,74 @@ function App() {
           </div>
         ) : (
           <div className="actions-view">
-
-            {/* Section 1: Recording Controls */}
-            <div className="actions-section">
-              <div className="actions-section-title">Recording</div>
-              <div className="rec-controls">
-                <button
-                  className="rec-btn start"
-                  onClick={() => handleControl('start')}
-                  disabled={transcriptionState === 'recording'}
-                >▶ Start</button>
-                <button
-                  className="rec-btn pause"
-                  onClick={() => handleControl('pause')}
-                  disabled={transcriptionState !== 'recording'}
-                >⏸ Pause</button>
-                <button
-                  className="rec-btn stop"
-                  onClick={() => handleControl('stop')}
-                  disabled={transcriptionState === 'idle'}
-                >■ Stop</button>
-              </div>
-              <div className="rec-state-label">
-                {transcriptionState === 'recording' && deepgramState === 'streaming' && '● Transcribing…'}
-                {transcriptionState === 'recording' && deepgramState !== 'streaming' && '◎ Listening…'}
-                {transcriptionState === 'paused'    && '⏸ Paused'}
-                {transcriptionState === 'idle'      && 'Ready'}
-              </div>
-            </div>
-
-            {/* Section 2: Log Outcome */}
-            <div className="actions-section">
-              <div className="actions-section-title">Log Outcome</div>
-
-              {/* No Human row */}
-              <div className="outcome-row-label">No Human →</div>
-              <div className="quick-row">
-                <button className="quick-btn dead-end"
-                  onClick={() => { handleSetOutcome('no_answer'); handleControl('stop'); }}>
-                  📵 No Answer
-                </button>
-                <button className="quick-btn dead-end"
-                  onClick={() => {
-                    if (currentNode?.voicemailNodeId) handleNavigate(currentNode.voicemailNodeId);
-                    else handleControl('pause');
-                    handleSetOutcome('left_voicemail');
-                  }}>
-                  📨 Voicemail
-                </button>
-                <button className="quick-btn dead-end"
-                  onClick={() => { handleSetOutcome('disconnected'); handleControl('stop'); }}>
-                  ✕ Disconnected
-                </button>
-                <button className="quick-btn dead-end"
-                  onClick={() => { handleSetOutcome('redirected'); handleControl('stop'); }}>
-                  ↗ Redirected
-                </button>
-              </div>
-
-              {/* Human row */}
-              <div className="outcome-row-label human-label">Human →</div>
-              <div className="quick-row">
-                <button
-                  className={`quick-btn human ${!currentNode?.gatekeeperNodeId ? 'disabled' : ''}`}
-                  disabled={!currentNode?.gatekeeperNodeId}
-                  onClick={() => currentNode?.gatekeeperNodeId && handleNavigate(currentNode.gatekeeperNodeId)}
-                >
-                  🛡 Gatekeeper
-                </button>
-                <button className="quick-btn human" onClick={handleResetAIContext}>
-                  👤 New Contact
-                </button>
-              </div>
-
-              <div className="outcome-divider" />
-
-              {/* Positive outcomes */}
-              {([
-                { id: 'meeting_set',    label: '✅ Meeting Set' },
-                { id: 'follow_up',      label: '📅 Follow Up' },
-                { id: 'send_info',      label: '📄 Send Info' },
-                { id: 'not_interested', label: '🚫 Not Interested' },
-                { id: 'wrong_person',   label: '👥 Wrong Person' },
-              ] as const).map(({ id, label }) => (
-                <button
-                  key={id}
-                  className={`outcome-btn ${outcome === id ? 'active' : ''}`}
-                  onClick={() => handleSetOutcome(id)}
-                >{label}</button>
-              ))}
-            </div>
-
-            {/* Section 3: Settings */}
             <div className="actions-section">
               <div className="actions-section-title">Settings</div>
               <div className="practice-row">
                 <span className="practice-label">Practice Mode</span>
-                <button
-                  className="practice-toggle"
-                  onClick={handleTogglePracticeMode}
-                  style={{ backgroundColor: isPracticeMode ? 'var(--primary)' : 'var(--border)' }}
-                >
+                <button className="practice-toggle" onClick={handleTogglePracticeMode} style={{ backgroundColor: isPracticeMode ? 'var(--primary)' : 'var(--border)' }}>
                   <span className={`practice-thumb ${isPracticeMode ? 'on' : ''}`} />
                 </button>
               </div>
-
               <div className="device-divider" />
               <div className="actions-section-title" style={{ marginTop: 4 }}>Audio Devices</div>
-
               <div className="device-row">
                 <label className="device-label">🎙 Microphone</label>
-                <select
-                  className="device-select"
-                  value={selectedInput ?? ''}
-                  onFocus={fetchDevices}
-                  onChange={e => handleSetDevices(e.target.value || null, undefined as unknown as string | null)}
-                >
+                <select className="device-select" value={selectedInput ?? ''} onFocus={fetchDevices} onChange={e => handleSetDevices(e.target.value || null, null)}>
                   <option value="">System Default</option>
                   {audioDevices.inputs.map(d => <option key={d} value={d}>{d}</option>)}
                 </select>
               </div>
-
               <div className="device-row">
                 <label className="device-label">🔊 Speaker / Loopback</label>
-                <select
-                  className="device-select"
-                  value={selectedOutput ?? ''}
-                  onFocus={fetchDevices}
-                  onChange={e => handleSetDevices(undefined as unknown as string | null, e.target.value || null)}
-                >
+                <select className="device-select" value={selectedOutput ?? ''} onFocus={fetchDevices} onChange={e => handleSetDevices(null, e.target.value || null)}>
                   <option value="">System Default</option>
                   {audioDevices.outputs.map(d => <option key={d} value={d}>{d}</option>)}
                 </select>
               </div>
+              <div className="device-divider" />
+              <div className="device-row">
+                <div className="device-label-row">
+                  <label className="device-label">🎤 Mic Gain (Boost)</label>
+                  <span className="device-value">{micGain.toFixed(1)}x</span>
+                </div>
+                <input
+                  type="range"
+                  className="device-slider"
+                  min="1.0"
+                  max="20.0"
+                  step="0.5"
+                  value={micGain}
+                  onChange={e => handleSetMicGain(parseFloat(e.target.value))}
+                />
+              </div>
+              <div className="device-divider" />
+              <div className="actions-section-title" style={{ marginTop: 4 }}>Appearance</div>
+              <div className="appearance-row">
+                <span className="device-label">Theme</span>
+                <div className="theme-picker">
+                  <button className={`theme-swatch dark ${theme === 'dark' ? 'active' : ''}`} onClick={() => setTheme('dark')} title="Dark" />
+                  <button className={`theme-swatch darker ${theme === 'darker' ? 'active' : ''}`} onClick={() => setTheme('darker')} title="Darker (OLED)" />
+                  <button className={`theme-swatch slate ${theme === 'slate' ? 'active' : ''}`} onClick={() => setTheme('slate')} title="Slate Blue" />
+                </div>
+              </div>
+              <div className="appearance-row">
+                <span className="device-label">Font Size</span>
+                <div className="font-size-picker">
+                  <button className={`font-size-btn ${fontScale === 0.85 ? 'active' : ''}`} onClick={() => setFontScale(0.85)}>A−</button>
+                  <button className={`font-size-btn ${fontScale === 1.0 ? 'active' : ''}`} onClick={() => setFontScale(1.0)}>A</button>
+                  <button className={`font-size-btn ${fontScale === 1.15 ? 'active' : ''}`} onClick={() => setFontScale(1.15)}>A+</button>
+                </div>
+              </div>
             </div>
-
           </div>
         )}
       </div>
 
-      {/* Footer */}
       <footer className="overlay-footer">
         {updateVersion ? (
           <div className="update-banner">
             <span className="update-text">v{updateVersion} available</span>
-            <button className="update-btn" onClick={handleUpdate} disabled={updating}>
-              {updating ? "Installing…" : "Update Now"}
-            </button>
+            <button className="update-btn" onClick={handleUpdate} disabled={updating}>{updating ? "Installing…" : "Update Now"}</button>
           </div>
         ) : (
           <div className="footer-vis">

@@ -7,10 +7,10 @@ use tauri::Emitter;
 use std::collections::VecDeque;
 
 // ── VAD constants ────────────────────────────────────────────────────────────
-const VAD_THRESHOLD: f32 = 0.015;
-const SPEECH_TRIGGER_COUNT: u32 = 3;     // 3 × ~40ms = ~120ms of speech to open DG
-const SILENCE_CLOSE_COUNT: u32 = 37;     // 37 × ~40ms ≈ 1.5s of silence to close DG
-const PRE_BUFFER_SIZE: usize = 8;        // ~320ms of audio kept before speech onset
+const VAD_THRESHOLD: f32 = 0.012;        // Balanced: stable for both mic and system audio
+const SPEECH_TRIGGER_COUNT: u32 = 2;     // 2 × ~40ms = ~80ms of speech to open DG (faster trigger)
+const SILENCE_CLOSE_COUNT: u32 = 125;    // 125 × ~40ms ≈ 5s of silence before closing DG
+const PRE_BUFFER_SIZE: usize = 12;       // ~480ms of audio kept before speech onset
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum StreamState {
@@ -25,6 +25,11 @@ fn rms(samples: &[f32]) -> f32 {
     }
     let sum_sq: f32 = samples.iter().map(|s| s * s).sum();
     (sum_sq / samples.len() as f32).sqrt()
+}
+
+/// Compute peak (max absolute value) of a sample buffer.
+fn peak(samples: &[f32]) -> f32 {
+    samples.iter().map(|s| s.abs()).fold(0.0f32, f32::max)
 }
 
 /// Open a fresh Deepgram WebSocket connection.
@@ -161,6 +166,12 @@ pub async fn run_deepgram_loop(
 
 /// VAD-gated streaming session. Runs while recording is active (start command).
 /// Opens/closes Deepgram connections dynamically based on speech detection.
+///
+/// VAD checks BOTH mic and system audio energy independently — if either has
+/// speech above threshold, the connection stays open. This ensures that:
+/// - Prospect speaking through system audio keeps the connection alive
+/// - Rep speaking into mic keeps the connection alive
+/// - Only true silence (both channels quiet for 5s) closes the connection
 async fn vad_gated_stream(
     window: tauri::Window,
     mic_rx: &mut tokio::sync::broadcast::Receiver<Vec<f32>>,
@@ -192,25 +203,26 @@ async fn vad_gated_stream(
 
     // Metrics
     let mut loop_count = 0u64;
-    let mut mic_peak = 0.0f32;
-    let mut sys_peak = 0.0f32;
+    let mut mic_peak_metric = 0.0f32;
+    let mut sys_peak_metric = 0.0f32;
 
     loop {
         loop_count += 1;
         if loop_count % 100 == 0 {
-            if mic_peak > 0.001 || sys_peak > 0.001 || mic_buffer.len() > 1000 {
-                println!("VAD Status | State: {:?} | Buffers: Mic={}, Sys={} | Peak: Mic={:.4}, Sys={:.4}",
-                    stream_state, mic_buffer.len(), sys_buffer.len(), mic_peak, sys_peak);
+            // Always print status when streaming, otherwise only when there's signal
+            if stream_state == StreamState::Streaming || mic_peak_metric > 0.001 || sys_peak_metric > 0.001 {
+                println!("VAD Status | State: {:?} | Buffers: Mic={}, Sys={} | Peak: Mic={:.4}, Sys={:.4} | Silence: {}",
+                    stream_state, mic_buffer.len(), sys_buffer.len(), mic_peak_metric, sys_peak_metric, silence_chunk_count);
             }
-            mic_peak = 0.0;
-            sys_peak = 0.0;
+            mic_peak_metric = 0.0;
+            sys_peak_metric = 0.0;
         }
 
         // Emit audio levels for frontend visualizer
         if loop_count % 10 == 0 {
             let _ = window.emit("audio-levels", serde_json::json!({
-                "mic": mic_peak,
-                "sys": sys_peak
+                "mic": mic_peak_metric,
+                "sys": sys_peak_metric
             }));
         }
 
@@ -225,12 +237,14 @@ async fn vad_gated_stream(
                             let actual_size = std::cmp::min(chunk_size, mic_buffer.len());
 
                             // Build interleaved PCM for this chunk
-                            let mut interleaved_f32 = Vec::with_capacity(actual_size);
+                            // Also track per-channel energy for smarter VAD
+                            let mut mic_samples_chunk = Vec::with_capacity(actual_size);
+                            let mut sys_samples_chunk = Vec::with_capacity(actual_size);
                             let mut interleaved_data = Vec::with_capacity(actual_size * 2 * 2);
 
                             for _ in 0..actual_size {
                                 let mic_sample = mic_buffer.pop_front().unwrap_or(0.0f32);
-                                mic_peak = mic_peak.max(mic_sample.abs());
+                                mic_peak_metric = mic_peak_metric.max(mic_sample.abs());
 
                                 let mut sys_sample = 0.0f32;
                                 if !sys_buffer.is_empty() {
@@ -244,15 +258,15 @@ async fn vad_gated_stream(
                                         sys_accumulator -= 1.0;
                                     }
                                     if count > 0 {
-                                        sys_sample = (sys_sum / count as f32) * 1.5;
+                                        sys_sample = sys_sum / count as f32;
                                     }
                                 } else {
                                     sys_accumulator = 0.0;
                                 }
 
-                                sys_peak = sys_peak.max(sys_sample.abs());
-                                interleaved_f32.push(mic_sample);
-                                interleaved_f32.push(sys_sample);
+                                sys_peak_metric = sys_peak_metric.max(sys_sample.abs());
+                                mic_samples_chunk.push(mic_sample);
+                                sys_samples_chunk.push(sys_sample);
 
                                 let mic_i16 = (mic_sample.max(-1.0).min(1.0) * 32767.0) as i16;
                                 let sys_i16 = (sys_sample.max(-1.0).min(1.0) * 32767.0) as i16;
@@ -266,8 +280,17 @@ async fn vad_gated_stream(
                             }
 
                             // ── VAD decision ──────────────────────────────────
-                            let level = rms(&interleaved_f32);
-                            let is_speech = level > VAD_THRESHOLD;
+                            // Check BOTH channels independently — either one having
+                            // speech keeps the connection alive. This is critical for
+                            // hearing the prospect through system audio loopback.
+                            let mic_energy = rms(&mic_samples_chunk);
+                            let sys_energy = rms(&sys_samples_chunk);
+                            let mic_pk = peak(&mic_samples_chunk);
+                            let sys_pk = peak(&sys_samples_chunk);
+                            let is_speech = mic_energy > VAD_THRESHOLD
+                                || sys_energy > VAD_THRESHOLD
+                                || mic_pk > VAD_THRESHOLD * 3.0
+                                || sys_pk > VAD_THRESHOLD * 3.0;
 
                             match stream_state {
                                 StreamState::Listening => {
@@ -281,7 +304,8 @@ async fn vad_gated_stream(
                                         vad_positive_count += 1;
                                         if vad_positive_count >= SPEECH_TRIGGER_COUNT {
                                             // ── Transition to Streaming ────────
-                                            println!("VAD: Speech detected (RMS={:.4}), opening Deepgram WS", level);
+                                            println!("VAD: Speech detected (mic_rms={:.4}, sys_rms={:.4}), opening Deepgram WS",
+                                                mic_energy, sys_energy);
 
                                             match open_deepgram_ws(api_key, target_sample_rate, transcript_tx.clone()).await {
                                                 Ok((write, recv_task)) => {

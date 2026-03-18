@@ -6,6 +6,7 @@ pub struct AudioCapture {
     _output_stream: Option<cpal::Stream>,
     pub preferred_input: Option<String>,
     pub preferred_output: Option<String>,
+    pub mic_gain: f32,
 }
 
 fn resolve_input(host: &cpal::Host, preferred: &Option<String>) -> Result<cpal::Device, String> {
@@ -41,6 +42,7 @@ impl AudioCapture {
             _output_stream: None,
             preferred_input: None,
             preferred_output: None,
+            mic_gain: 1.0,
         }
     }
 
@@ -48,6 +50,10 @@ impl AudioCapture {
         self._input_stream = None;
         self._output_stream = None;
         println!("Audio capture stopped (streams dropped)");
+    }
+
+    pub fn is_active(&self) -> bool {
+        self._input_stream.is_some()
     }
 
     pub fn list_devices() -> (Vec<String>, Vec<String>) {
@@ -104,6 +110,7 @@ impl AudioCapture {
 
         let tx_mic = mic_tx.clone();
         let mut mic_count = 0;
+        let gain = self.mic_gain;
         let input_stream = input_device
             .build_input_stream(
                 &input_config.clone().into(),
@@ -112,17 +119,21 @@ impl AudioCapture {
                     if mic_count % 100 == 0 {
                         println!("Mic callback triggered: samples={}", data.len());
                     }
+
+                    // Apply mic gain and clamp
+                    let processed_data: Vec<f32> = data.iter().map(|&s| (s * gain).max(-1.0).min(1.0)).collect();
+
                     if mic_channels == 2 {
-                        let mut mono_data = Vec::with_capacity(data.len() / 2);
-                        for chunk in data.chunks_exact(2) {
+                        let mut mono_data = Vec::with_capacity(processed_data.len() / 2);
+                        for chunk in processed_data.chunks_exact(2) {
                             mono_data.push((chunk[0] + chunk[1]) / 2.0);
                         }
                         let _ = tx_mic.send(mono_data);
                     } else if mic_channels == 1 {
-                        let _ = tx_mic.send(data.to_vec());
+                        let _ = tx_mic.send(processed_data);
                     } else {
-                        let mut mono_data = Vec::with_capacity(data.len() / mic_channels as usize);
-                        for chunk in data.chunks_exact(mic_channels as usize) {
+                        let mut mono_data = Vec::with_capacity(processed_data.len() / mic_channels as usize);
+                        for chunk in processed_data.chunks_exact(mic_channels as usize) {
                             mono_data.push(chunk[0]);
                         }
                         let _ = tx_mic.send(mono_data);
@@ -134,13 +145,32 @@ impl AudioCapture {
             .map_err(|e| e.to_string())?;
 
         // Setup system audio capture (Output loopback)
+        // On Windows, cpal uses WASAPI which supports loopback capture from output devices.
+        // build_input_stream on an output device = WASAPI loopback mode.
         let output_device = resolve_output(&host, &self.preferred_output)?;
+        let output_device_name = output_device
+            .name()
+            .unwrap_or_else(|_| "Unknown".to_string());
         println!(
             "Using output device for loopback: {}",
-            output_device
-                .name()
-                .unwrap_or_else(|_| "Unknown".to_string())
+            output_device_name
         );
+
+        // Log all output devices so users can identify the correct one for loopback
+        println!("--- Available output devices for loopback ---");
+        if let Ok(devices) = host.output_devices() {
+            for device in devices {
+                let name = device.name().unwrap_or_else(|_| "Unknown".to_string());
+                let marker = if name == output_device_name { " ◀ SELECTED" } else { "" };
+                if let Ok(cfg) = device.default_output_config() {
+                    println!("  🔊 {} ({}ch, {}Hz){}", name, cfg.channels(), cfg.sample_rate(), marker);
+                } else {
+                    println!("  🔊 {} (config unavailable){}", name, marker);
+                }
+            }
+        }
+        println!("----------------------------------------------");
+        println!("💡 If system audio peak stays at 0.0000, try selecting a different\n   Speaker/Loopback device — pick the one your audio is actually playing through.");
 
         let output_config = output_device
             .default_output_config()
@@ -152,6 +182,7 @@ impl AudioCapture {
 
         let tx_sys = sys_tx.clone();
         let mut sys_count = 0;
+        let mut zero_peak_streak = 0u32;
         let output_stream = output_device
             .build_input_stream(
                 &output_config.clone().into(),
@@ -184,6 +215,18 @@ impl AudioCapture {
                             "Sys capture | Best Ch: {} | Peak: {:.4}",
                             best_channel_idx, max_peak
                         );
+
+                        // Track zero-peak streaks and warn users
+                        if max_peak < 0.0001 {
+                            zero_peak_streak += 1;
+                            if zero_peak_streak == 5 {
+                                eprintln!("⚠  System audio has been silent for ~500 callbacks.");
+                                eprintln!("   This usually means the wrong output device is selected for loopback.");
+                                eprintln!("   Try changing the 'Speaker / Loopback' device in the companion settings.");
+                            }
+                        } else {
+                            zero_peak_streak = 0;
+                        }
                     }
                     let _ = tx_sys.send(mono_data);
                 },

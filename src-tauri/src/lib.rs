@@ -18,7 +18,12 @@ pub struct AppState {
 }
 
 #[tauri::command]
-async fn start_companion(window: tauri::Window, state: tauri::State<'_, AppState>, app: tauri::AppHandle) -> Result<String, String> {
+async fn start_companion(
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
+    gain: Option<f32>,
+) -> Result<String, String> {
     let mut is_running = state.is_running.lock().unwrap();
     if *is_running {
         return Ok("Companion already running".to_string());
@@ -39,9 +44,15 @@ async fn start_companion(window: tauri::Window, state: tauri::State<'_, AppState
     let cmd_tx_for_server = state.cmd_tx.clone();
 
     // Start Audio Capture
-    let ((mic_sample_rate, _mic_channels), (_sys_sample_rate, _sys_channels)) = match state.capture.lock().unwrap().start(audio_tx, audio_output_tx) {
-        Ok(config) => config,
-        Err(e) => return Err(format!("Failed to start audio capture: {}", e)),
+    let ((mic_sample_rate, _mic_channels), (_sys_sample_rate, _sys_channels)) = {
+        let mut capture = state.capture.lock().unwrap();
+        if let Some(g) = gain {
+            capture.mic_gain = g;
+        }
+        match capture.start(audio_tx, audio_output_tx) {
+            Ok(config) => config,
+            Err(e) => return Err(format!("Failed to start audio capture: {}", e)),
+        }
     };
 
     let api_key = std::env::var("DEEPGRAM_API_KEY")
@@ -107,6 +118,28 @@ async fn set_audio_devices(
     capture.preferred_input = input;
     capture.preferred_output = output;
     capture.start(audio_tx, audio_output_tx).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_mic_gain(
+    state: tauri::State<'_, AppState>,
+    gain: f32,
+) -> Result<(), String> {
+    let audio_tx = state.audio_tx.clone();
+    let audio_output_tx = state.audio_output_tx.clone();
+    let mut capture = state.capture.lock().unwrap();
+    
+    // Only restart if gain actually changed and we are already running
+    if (capture.mic_gain - gain).abs() > 0.001 {
+        capture.mic_gain = gain;
+        // If streams are active, we need to restart them to apply the new gain
+        // (Since the gain is captured in the closure during .start())
+        if capture.is_active() {
+            capture.stop();
+            capture.start(audio_tx, audio_output_tx).map_err(|e| e.to_string())?;
+        }
+    }
     Ok(())
 }
 
@@ -216,7 +249,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![start_companion, send_to_browser, install_update, list_audio_devices, set_audio_devices])
+        .invoke_handler(tauri::generate_handler![start_companion, send_to_browser, install_update, list_audio_devices, set_audio_devices, set_mic_gain])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

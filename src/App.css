@@ -11,8 +11,30 @@
   --amber: #fbbf24;
   --red: #f87171;
   --green: #4ade80;
+  --font-scale: 1;
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
+}
+
+/* ── Theme: Darker (near-black OLED) ─────────── */
+[data-theme="darker"] {
+  --bg: 4, 4, 8;
+  --surface: rgba(255, 255, 255, 0.04);
+  --surface-hover: rgba(255, 255, 255, 0.07);
+  --border: rgba(255, 255, 255, 0.08);
+  --text: #e2e8f0;
+  --text-muted: #64748b;
+}
+
+/* ── Theme: Slate Blue ────────────────────────── */
+[data-theme="slate"] {
+  --bg: 15, 23, 42;
+  --surface: rgba(99, 120, 180, 0.08);
+  --surface-hover: rgba(99, 120, 180, 0.13);
+  --border: rgba(99, 120, 180, 0.18);
+  --text: #e2e8f0;
+  --text-muted: #94a3b8;
+  --primary: #93c5fd;
 }
 
 * {
@@ -222,6 +244,7 @@ body {
   margin-bottom: 6px;
   line-height: 1.4;
   display: -webkit-box;
+  line-clamp: 2;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
@@ -757,3 +780,515 @@ body {
   background: var(--bg);
   color: var(--text);
 }
+
+.device-label-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.device-value {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--primary);
+}
+
+.device-slider {
+  width: 100%;
+  height: 4px;
+  background: var(--surface-hover);
+  border-radius: 2px;
+  appearance: none;
+  -webkit-appearance: none;
+  outline: none;
+  cursor: pointer;
+  margin: 4px 0;
+}
+
+.device-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--primary);
+  cursor: pointer;
+  transition: transform 0.1s;
+}
+
+.device-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
+}
+
+/* ── Compact Controls Bar (Script tab) ──────── */
+.compact-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 6px 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+
+.compact-controls-left {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.compact-controls-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.compact-ctrl-btn {
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 5px;
+  font-size: 10px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+}
+
+.compact-ctrl-btn.start {
+  background: rgba(74, 222, 128, 0.12);
+  color: var(--green);
+}
+.compact-ctrl-btn.start:hover:not(:disabled) { background: rgba(74, 222, 128, 0.25); }
+
+.compact-ctrl-btn.pause {
+  background: rgba(251, 191, 36, 0.12);
+  color: var(--amber);
+}
+.compact-ctrl-btn.pause:hover:not(:disabled) { background: rgba(251, 191, 36, 0.25); }
+
+.compact-ctrl-btn.stop {
+  background: rgba(248, 113, 113, 0.10);
+  color: var(--red);
+}
+.compact-ctrl-btn.stop:hover:not(:disabled) { background: rgba(248, 113, 113, 0.25); }
+
+.compact-ctrl-btn:disabled {
+  opacity: 0.2;
+  cursor: not-allowed;
+}
+
+.compact-state-dot {
+  display: flex;
+  align-items: center;
+  margin-left: 4px;
+}
+
+.mini-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.mini-dot.active {
+  background: var(--accent);
+  box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.25);
+  animation: pulse 2s infinite;
+}
+
+.mini-dot.listening {
+  background: var(--amber);
+  box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.25);
+  animation: pulse 2s infinite;
+}
+
+.mini-dot.paused {
+  background: var(--amber);
+  box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.2);
+}
+
+/* ── Compact quick action buttons ───────────── */
+.compact-quick-btn {
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: transparent;
+  font-size: 11px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+}
+
+.compact-quick-btn:hover {
+  background: var(--surface-hover);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+/* ── Compact outcome dropdown ───────────────── */
+.compact-outcome-wrap {
+  position: relative;
+}
+
+.compact-outcome-btn {
+  font-size: 9px;
+  font-weight: 600;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.compact-outcome-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.compact-outcome-btn.has-outcome {
+  border-color: rgba(74, 222, 128, 0.35);
+  color: var(--green);
+  background: rgba(74, 222, 128, 0.08);
+}
+
+.compact-outcome-dropdown {
+  position: absolute;
+  bottom: 100%;
+  right: 0;
+  margin-bottom: 4px;
+  background: rgba(var(--bg), 0.98);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px;
+  min-width: 150px;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.4);
+}
+
+.compact-outcome-item {
+  font-size: 10px;
+  font-weight: 500;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.12s;
+}
+
+.compact-outcome-item:hover {
+  background: var(--surface-hover);
+}
+
+.compact-outcome-item.active {
+  background: rgba(74, 222, 128, 0.12);
+  color: var(--green);
+  font-weight: 600;
+}
+
+/* ── Flow selector (Opening Script) ─────────── */
+.flow-selector {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.flow-selector-label {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.flow-selector-select {
+  flex: 1;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--primary);
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.flow-selector-select:focus {
+  border-color: var(--primary);
+}
+
+.flow-selector-select option {
+  background: rgba(var(--bg), 1);
+  color: var(--text);
+}
+
+/* ── AI Correction Picker ───────────────────── */
+.ai-correction {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(251, 191, 36, 0.15);
+}
+
+.ai-correction-label {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.ai-correction-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.ai-correction-btn {
+  font-size: 10px;
+  font-weight: 500;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.12s;
+}
+
+.ai-correction-btn:hover {
+  background: rgba(129, 140, 248, 0.12);
+  border-color: rgba(129, 140, 248, 0.35);
+  color: var(--primary);
+}
+
+/* ── AI Dismiss Button ──────────────────────── */
+.ai-dismiss-btn {
+  width: 24px;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 4px 0;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+
+.ai-dismiss-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+/* ── Co-Pilot button ────────────────────────────── */
+.copilot-btn {
+  font-size: 12px;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+  -webkit-app-region: no-drag;
+  opacity: 0.6;
+}
+
+.copilot-btn:hover {
+  background: var(--surface-hover);
+  opacity: 1;
+}
+
+.copilot-btn.active {
+  background: rgba(129, 140, 248, 0.18);
+  border-color: rgba(129, 140, 248, 0.4);
+  opacity: 1;
+}
+
+/* ── Next Call button ───────────────────────────── */
+.next-call-btn {
+  width: 100%;
+  margin-top: 4px;
+  padding: 7px 10px;
+  background: rgba(74, 222, 128, 0.12);
+  border: 1px solid rgba(74, 222, 128, 0.3);
+  border-radius: 6px;
+  color: var(--green);
+  font-size: calc(11px * var(--font-scale));
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s;
+  text-align: center;
+}
+
+.next-call-btn:hover {
+  background: rgba(74, 222, 128, 0.22);
+}
+
+/* ── Outcome log section (Script tab) ─────────── */
+.outcome-log-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.outcome-log-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.log-btn {
+  font-size: calc(9px * var(--font-scale));
+  font-weight: 600;
+  padding: 3px 6px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.log-btn.dead-end {
+  background: rgba(251, 191, 36, 0.08);
+  color: var(--amber);
+  border-color: rgba(251, 191, 36, 0.18);
+}
+.log-btn.dead-end:hover { background: rgba(251, 191, 36, 0.18); }
+
+.log-btn.success {
+  background: rgba(74, 222, 128, 0.07);
+  color: var(--accent);
+  border-color: rgba(74, 222, 128, 0.15);
+}
+.log-btn.success:hover { background: rgba(74, 222, 128, 0.16); }
+
+/* ── Call logged overlay toast ───────────────── */
+.logged-toast {
+  margin: 6px 8px 0;
+  padding: 6px 10px;
+  background: rgba(74, 222, 128, 0.12);
+  border: 1px solid rgba(74, 222, 128, 0.3);
+  border-radius: 6px;
+  color: var(--green);
+  font-size: calc(10px * var(--font-scale));
+  font-weight: 700;
+  text-align: center;
+  flex-shrink: 0;
+  animation: fade-in-out 2.5s ease forwards;
+}
+
+@keyframes fade-in-out {
+  0%   { opacity: 0; transform: translateY(-4px); }
+  10%  { opacity: 1; transform: translateY(0); }
+  80%  { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* ── Appearance controls ─────────────────────── */
+.appearance-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.theme-picker {
+  display: flex;
+  gap: 5px;
+}
+
+.theme-swatch {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  transition: all 0.15s;
+  padding: 0;
+}
+
+.theme-swatch.dark {
+  background: rgb(12, 15, 23);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+.theme-swatch.darker {
+  background: rgb(4, 4, 8);
+  border-color: rgba(255, 255, 255, 0.10);
+}
+.theme-swatch.slate {
+  background: rgb(15, 23, 42);
+  border-color: rgba(99, 120, 180, 0.3);
+}
+
+.theme-swatch.active {
+  border-color: var(--primary) !important;
+  box-shadow: 0 0 0 2px rgba(129, 140, 248, 0.35);
+}
+
+.font-size-picker {
+  display: flex;
+  gap: 3px;
+}
+
+.font-size-btn {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.font-size-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.font-size-btn.active {
+  background: rgba(129, 140, 248, 0.15);
+  border-color: rgba(129, 140, 248, 0.4);
+  color: var(--primary);
+}
+

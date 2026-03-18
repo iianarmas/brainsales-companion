@@ -2,9 +2,36 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use tokio::sync::broadcast;
 
 pub struct AudioCapture {
-    // This will hold the streams so they don't get dropped and stop recording
     _input_stream: Option<cpal::Stream>,
     _output_stream: Option<cpal::Stream>,
+    pub preferred_input: Option<String>,
+    pub preferred_output: Option<String>,
+}
+
+fn resolve_input(host: &cpal::Host, preferred: &Option<String>) -> Result<cpal::Device, String> {
+    if let Some(name) = preferred {
+        if let Ok(mut devices) = host.input_devices() {
+            if let Some(dev) = devices.find(|d| d.name().ok().as_deref() == Some(name.as_str())) {
+                println!("Using preferred input device: {}", name);
+                return Ok(dev);
+            }
+        }
+        println!("Preferred input '{}' not found, falling back to default", name);
+    }
+    host.default_input_device().ok_or_else(|| "No default input device found".to_string())
+}
+
+fn resolve_output(host: &cpal::Host, preferred: &Option<String>) -> Result<cpal::Device, String> {
+    if let Some(name) = preferred {
+        if let Ok(mut devices) = host.output_devices() {
+            if let Some(dev) = devices.find(|d| d.name().ok().as_deref() == Some(name.as_str())) {
+                println!("Using preferred output device: {}", name);
+                return Ok(dev);
+            }
+        }
+        println!("Preferred output '{}' not found, falling back to default", name);
+    }
+    host.default_output_device().ok_or_else(|| "No default output device found".to_string())
 }
 
 impl AudioCapture {
@@ -12,7 +39,26 @@ impl AudioCapture {
         Self {
             _input_stream: None,
             _output_stream: None,
+            preferred_input: None,
+            preferred_output: None,
         }
+    }
+
+    pub fn stop(&mut self) {
+        self._input_stream = None;
+        self._output_stream = None;
+        println!("Audio capture stopped (streams dropped)");
+    }
+
+    pub fn list_devices() -> (Vec<String>, Vec<String>) {
+        let host = cpal::default_host();
+        let inputs = host.input_devices().ok()
+            .map(|d| d.filter_map(|dev| dev.name().ok()).collect())
+            .unwrap_or_default();
+        let outputs = host.output_devices().ok()
+            .map(|d| d.filter_map(|dev| dev.name().ok()).collect())
+            .unwrap_or_default();
+        (inputs, outputs)
     }
 
     pub fn start(
@@ -40,9 +86,7 @@ impl AudioCapture {
         println!("------------------------------");
 
         // Setup microphone capture (Input)
-        let input_device = host
-            .default_input_device()
-            .ok_or("Failed to get default input device")?;
+        let input_device = resolve_input(&host, &self.preferred_input)?;
         println!(
             "Using input device: {}",
             input_device
@@ -90,9 +134,7 @@ impl AudioCapture {
             .map_err(|e| e.to_string())?;
 
         // Setup system audio capture (Output loopback)
-        let output_device = host
-            .default_output_device()
-            .ok_or("Failed to get default output device")?;
+        let output_device = resolve_output(&host, &self.preferred_output)?;
         println!(
             "Using output device for loopback: {}",
             output_device

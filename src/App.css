@@ -501,3 +501,259 @@ body {
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* ── Status dot: paused state ───────────────── */
+.status-dot.paused {
+  background: var(--amber);
+  box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.2);
+}
+
+/* ── Status dot: listening state (VAD active, no Deepgram yet) ── */
+.status-dot.listening {
+  background: var(--amber);
+  box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.2);
+  animation: pulse 2s infinite;
+}
+
+/* ── Actions view ────────────────────────────── */
+.actions-view {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.actions-section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.actions-section-title {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-muted);
+  margin-bottom: 2px;
+}
+
+/* ── Recording controls ──────────────────────── */
+.rec-controls {
+  display: flex;
+  gap: 5px;
+}
+
+.rec-btn {
+  flex: 1;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 5px 0;
+  border-radius: 5px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.rec-btn.start {
+  background: rgba(74, 222, 128, 0.12);
+  color: var(--green);
+  border-color: rgba(74, 222, 128, 0.25);
+}
+.rec-btn.start:hover:not(:disabled) { background: rgba(74, 222, 128, 0.22); }
+
+.rec-btn.pause {
+  background: rgba(251, 191, 36, 0.12);
+  color: var(--amber);
+  border-color: rgba(251, 191, 36, 0.25);
+}
+.rec-btn.pause:hover:not(:disabled) { background: rgba(251, 191, 36, 0.22); }
+
+.rec-btn.stop {
+  background: rgba(248, 113, 113, 0.10);
+  color: var(--red);
+  border-color: rgba(248, 113, 113, 0.20);
+}
+.rec-btn.stop:hover:not(:disabled) { background: rgba(248, 113, 113, 0.20); }
+
+.rec-btn:disabled {
+  opacity: 0.25;
+  cursor: not-allowed;
+}
+
+.rec-state-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+/* ── Quick action chips ──────────────────────── */
+.outcome-row-label {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 2px;
+}
+
+.human-label { color: #64748b; }
+
+.quick-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.quick-btn {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 4px 7px;
+  border-radius: 5px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.quick-btn.dead-end {
+  background: rgba(251, 191, 36, 0.10);
+  color: var(--amber);
+  border-color: rgba(251, 191, 36, 0.22);
+}
+.quick-btn.dead-end:hover { background: rgba(251, 191, 36, 0.20); }
+
+.quick-btn.human {
+  background: var(--surface);
+  color: var(--text-muted);
+  border-color: var(--border);
+}
+.quick-btn.human:hover:not(.disabled):not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.quick-btn.disabled,
+.quick-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+/* ── Outcome divider ─────────────────────────── */
+.outcome-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 2px 0;
+}
+
+/* ── Outcome buttons ─────────────────────────── */
+.outcome-btn {
+  width: 100%;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 6px 10px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.outcome-btn:hover {
+  background: var(--surface-hover);
+}
+
+.outcome-btn.active {
+  background: rgba(74, 222, 128, 0.12);
+  border-color: rgba(74, 222, 128, 0.35);
+  color: var(--green);
+  font-weight: 600;
+}
+
+/* ── Practice mode toggle ────────────────────── */
+.practice-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.practice-label {
+  font-size: 11px;
+  color: var(--text);
+}
+
+.practice-toggle {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  border-radius: 10px;
+  border: none;
+  cursor: pointer;
+  transition: background-color 0.2s;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.practice-thumb {
+  display: block;
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: white;
+  transition: transform 0.2s;
+}
+
+.practice-thumb.on {
+  transform: translateX(16px);
+}
+
+/* ── Device picker ───────────────────────────── */
+.device-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
+
+.device-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.device-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.device-select {
+  width: 100%;
+  font-size: 10px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--text);
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.device-select:focus {
+  border-color: var(--primary);
+}
+
+.device-select option {
+  background: var(--bg);
+  color: var(--text);
+}

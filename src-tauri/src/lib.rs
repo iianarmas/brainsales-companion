@@ -88,6 +88,28 @@ async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn list_audio_devices() -> serde_json::Value {
+    let (inputs, outputs) = AudioCapture::list_devices();
+    serde_json::json!({ "inputs": inputs, "outputs": outputs })
+}
+
+#[tauri::command]
+async fn set_audio_devices(
+    state: tauri::State<'_, AppState>,
+    input: Option<String>,
+    output: Option<String>,
+) -> Result<(), String> {
+    let audio_tx = state.audio_tx.clone();
+    let audio_output_tx = state.audio_output_tx.clone();
+    let mut capture = state.capture.lock().unwrap();
+    capture.stop();
+    capture.preferred_input = input;
+    capture.preferred_output = output;
+    capture.start(audio_tx, audio_output_tx).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Load .env file automatically
@@ -194,7 +216,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![start_companion, send_to_browser, install_update])
+        .invoke_handler(tauri::generate_handler![start_companion, send_to_browser, install_update, list_audio_devices, set_audio_devices])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

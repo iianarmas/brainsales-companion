@@ -1,13 +1,120 @@
 use tokio::sync::watch;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
-use futures_util::{StreamExt, SinkExt};
+use futures_util::{StreamExt, SinkExt, stream::SplitSink};
 use serde_json::Value;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tauri::Emitter;
+use std::collections::VecDeque;
+
+// ── VAD constants ────────────────────────────────────────────────────────────
+const VAD_THRESHOLD: f32 = 0.015;
+const SPEECH_TRIGGER_COUNT: u32 = 3;     // 3 × ~40ms = ~120ms of speech to open DG
+const SILENCE_CLOSE_COUNT: u32 = 37;     // 37 × ~40ms ≈ 1.5s of silence to close DG
+const PRE_BUFFER_SIZE: usize = 8;        // ~320ms of audio kept before speech onset
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum StreamState {
+    Listening,
+    Streaming,
+}
+
+/// Compute root-mean-square of a sample buffer (energy-based VAD).
+fn rms(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let sum_sq: f32 = samples.iter().map(|s| s * s).sum();
+    (sum_sq / samples.len() as f32).sqrt()
+}
+
+/// Open a fresh Deepgram WebSocket connection.
+/// Extracted as a helper so it can be called once per speech segment.
+/// The receive task parses Deepgram JSON and forwards final transcripts.
+async fn open_deepgram_ws(
+    api_key: &str,
+    target_sample_rate: u32,
+    transcript_tx: tokio::sync::broadcast::Sender<String>,
+) -> Result<
+    (
+        SplitSink<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, Message>,
+        tokio::task::JoinHandle<()>,
+    ),
+    Box<dyn std::error::Error + Send + Sync>,
+> {
+    let url = format!(
+        "wss://api.deepgram.com/v1/listen?encoding=linear16&sample_rate={}&channels=2&multichannel=true&model=nova-2&smart_format=true",
+        target_sample_rate
+    );
+    println!("VAD: Opening fresh Deepgram WS ({}Hz)", target_sample_rate);
+
+    let mut request = url.into_client_request()?;
+    request.headers_mut().insert(
+        "Authorization",
+        format!("Token {}", api_key).parse()?,
+    );
+
+    let (ws_stream, _) = connect_async(request).await?;
+    let (write, read) = ws_stream.split();
+
+    // Spawn a receive task that parses Deepgram transcripts
+    let receive_task = tokio::spawn(async move {
+        let mut read = read;
+        let mut last_transcript = String::new();
+
+        while let Some(message) = read.next().await {
+            match message {
+                Ok(Message::Text(text)) => {
+                    if let Ok(json) = serde_json::from_str::<Value>(&text) {
+                        if let Some(alternatives) = json["channel"]["alternatives"].as_array() {
+                            for alt in alternatives {
+                                let transcript = alt["transcript"].as_str().unwrap_or("").trim().to_string();
+                                let is_final = json["is_final"].as_bool().unwrap_or(false);
+                                let speech_final = json["speech_final"].as_bool().unwrap_or(false);
+
+                                let speaker = if let Some(arr) = json["channel_index"].as_array() {
+                                    arr.first().and_then(|v| v.as_i64()).unwrap_or(0) as i32
+                                } else if let Some(idx) = json["channel_index"].as_i64() {
+                                    idx as i32
+                                } else if let Some(arr) = json["metadata"]["channel_index"].as_array() {
+                                    arr.first().and_then(|v| v.as_i64()).unwrap_or(0) as i32
+                                } else {
+                                    json["metadata"]["channel_index"].as_i64().unwrap_or(0) as i32
+                                };
+
+                                if is_final && !transcript.is_empty() && transcript != last_transcript {
+                                    println!("FINAL [Speaker {}][speech_final={}]: {}", speaker, speech_final, transcript);
+                                    let payload = serde_json::json!({
+                                        "text": transcript,
+                                        "speaker": speaker,
+                                        "speechFinal": speech_final
+                                    }).to_string();
+                                    let _ = transcript_tx.send(payload);
+                                    last_transcript = transcript;
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(Message::Close(frame)) => {
+                    println!("VAD: Deepgram WS closed by server: {:?}", frame);
+                    break;
+                }
+                Err(e) => {
+                    eprintln!("VAD: Error receiving from Deepgram: {}", e);
+                    break;
+                }
+                _ => {}
+            }
+        }
+    });
+
+    Ok((write, receive_task))
+}
 
 /// Public entry point. Loops indefinitely, waiting for a "start" command from the
-/// web app before connecting to Deepgram. Stops the Deepgram connection when a
-/// "stop" or "pause" command is received, then waits for the next "start".
+/// web app before activating VAD-gated streaming to Deepgram.
+/// When "start" is received, audio capture runs locally with VAD monitoring.
+/// Deepgram connections are only opened when speech is detected.
 pub async fn run_deepgram_loop(
     window: tauri::Window,
     mut mic_rx: tokio::sync::broadcast::Receiver<Vec<f32>>,
@@ -26,13 +133,13 @@ pub async fn run_deepgram_loop(
             }
         }
 
-        println!("Deepgram: start command received, connecting...");
+        println!("Deepgram: start command received, activating VAD listener...");
 
-        // Drain stale audio that accumulated while Deepgram was idle
+        // Drain stale audio that accumulated while idle
         while mic_rx.try_recv().is_ok() {}
         while sys_rx.try_recv().is_ok() {}
 
-        if let Err(e) = start_deepgram_stream(
+        if let Err(e) = vad_gated_stream(
             window.clone(),
             &mut mic_rx,
             &mut sys_rx,
@@ -42,14 +149,19 @@ pub async fn run_deepgram_loop(
             source_sys_sample_rate,
             &mut cmd_rx,
         ).await {
-            eprintln!("Deepgram stream ended with error: {}", e);
+            eprintln!("Deepgram VAD stream ended with error: {}", e);
         }
 
-        println!("Deepgram: stream stopped, waiting for next start command...");
+        // Emit idle state when loop returns (stopped/paused)
+        let _ = window.emit("deepgram_state", serde_json::json!({"state": "idle"}));
+
+        println!("Deepgram: VAD stream stopped, waiting for next start command...");
     }
 }
 
-async fn start_deepgram_stream(
+/// VAD-gated streaming session. Runs while recording is active (start command).
+/// Opens/closes Deepgram connections dynamically based on speech detection.
+async fn vad_gated_stream(
     window: tauri::Window,
     mic_rx: &mut tokio::sync::broadcast::Receiver<Vec<f32>>,
     sys_rx: &mut tokio::sync::broadcast::Receiver<Vec<f32>>,
@@ -59,123 +171,42 @@ async fn start_deepgram_stream(
     source_sys_sample_rate: u32,
     cmd_rx: &mut watch::Receiver<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let url = format!(
-        "wss://api.deepgram.com/v1/listen?encoding=linear16&sample_rate={}&channels=2&multichannel=true&model=nova-2&smart_format=true",
-        target_sample_rate
-    );
-    println!("Connecting to Deepgram with URL: {}", url);
-
-    let mut request = url.into_client_request()?;
-    request.headers_mut().insert(
-        "Authorization",
-        format!("Token {}", api_key).parse()?,
-    );
-
-    let (ws_stream, _) = match connect_async(request).await {
-        Ok(val) => val,
-        Err(e) => {
-            eprintln!("Failed to connect to Deepgram: {}. Check your API key and internet connection.", e);
-            return Err(Box::new(e));
-        }
-    };
-    println!("WebSocket connected to Deepgram API (Target: {}Hz, 2ch Merged)", target_sample_rate);
-
-    let (mut write, mut read) = ws_stream.split();
-
-    // Task to receive transcripts from Deepgram
-    let transcript_tx_clone = transcript_tx.clone();
-    let receive_task = tokio::spawn(async move {
-        let mut last_transcript = String::new();
-
-        while let Some(message) = read.next().await {
-            match message {
-                Ok(Message::Text(text)) => {
-                    if let Ok(json) = serde_json::from_str::<Value>(&text) {
-                        // Log every message from Deepgram for debugging
-                        if let Some(_metadata) = json.get("metadata") {
-                            let is_final = json["is_final"].as_bool().unwrap_or(false);
-                            let channels = json["channel"]["alternatives"].as_array();
-                            let transcript_preview = channels.and_then(|c| c.first()).and_then(|a| a["transcript"].as_str()).unwrap_or("");
-
-                            if !transcript_preview.is_empty() {
-                                println!("DG DEBUG (final={}): {}", is_final, transcript_preview);
-                            }
-                        }
-
-                        if let Some(alternatives) = json["channel"]["alternatives"].as_array() {
-                            for alt in alternatives {
-                                let transcript = alt["transcript"].as_str().unwrap_or("").trim().to_string();
-                                let is_final = json["is_final"].as_bool().unwrap_or(false);
-                                let speech_final = json["speech_final"].as_bool().unwrap_or(false);
-
-                                // In Deepgram multichannel streaming, channel_index is usually in the top-level object
-                                // but can also be in metadata. We check both.
-                                let speaker = if let Some(arr) = json["channel_index"].as_array() {
-                                    arr.first().and_then(|v| v.as_i64()).unwrap_or(0) as i32
-                                } else if let Some(idx) = json["channel_index"].as_i64() {
-                                    idx as i32
-                                } else if let Some(arr) = json["metadata"]["channel_index"].as_array() {
-                                    arr.first().and_then(|v| v.as_i64()).unwrap_or(0) as i32
-                                } else {
-                                    json["metadata"]["channel_index"].as_i64().unwrap_or(0) as i32
-                                };
-
-                                if !transcript.is_empty() {
-                                    println!("TRANSCRIPT [Spk {}][final={}]: {}", speaker, is_final, transcript);
-                                }
-
-                                if is_final && !transcript.is_empty() && transcript != last_transcript {
-                                    println!("FINAL [Speaker {}][speech_final={}]: {}", speaker, speech_final, transcript);
-                                    let payload = serde_json::json!({
-                                        "text": transcript,
-                                        "speaker": speaker,
-                                        "speechFinal": speech_final
-                                    }).to_string();
-                                    let _ = transcript_tx_clone.send(payload.clone());
-                                    last_transcript = transcript;
-                                }
-                            }
-                        }
-                    }
-                }
-                Ok(Message::Close(frame)) => {
-                    println!("Deepgram WebSocket closed: {:?}", frame);
-                    break;
-                }
-                Err(e) => {
-                    eprintln!("Error receiving from Deepgram: {}", e);
-                    break;
-                }
-                _ => {}
-            }
-        }
-    });
-
-    // Task to send audio data to Deepgram
-    let mut mic_buffer: std::collections::VecDeque<f32> = std::collections::VecDeque::new();
-    let mut sys_buffer: std::collections::VecDeque<f32> = std::collections::VecDeque::new();
+    let mut mic_buffer: VecDeque<f32> = VecDeque::new();
+    let mut sys_buffer: VecDeque<f32> = VecDeque::new();
 
     // Resampling state for system audio
     let mut sys_accumulator = 0.0f32;
     let ratio = source_sys_sample_rate as f32 / target_sample_rate as f32;
 
-    let mut loop_count = 0;
+    // VAD state
+    let mut stream_state = StreamState::Listening;
+    let mut vad_positive_count: u32 = 0;
+    let mut silence_chunk_count: u32 = 0;
+
+    // Pre-speech ring buffer: stores encoded PCM chunks before speech onset
+    let mut pre_buffer: VecDeque<Vec<u8>> = VecDeque::with_capacity(PRE_BUFFER_SIZE);
+
+    // Active Deepgram connection (only Some while streaming)
+    let mut dg_write: Option<SplitSink<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, Message>> = None;
+    let mut dg_receive_task: Option<tokio::task::JoinHandle<()>> = None;
+
+    // Metrics
+    let mut loop_count = 0u64;
     let mut mic_peak = 0.0f32;
     let mut sys_peak = 0.0f32;
 
     loop {
         loop_count += 1;
         if loop_count % 100 == 0 {
-            // Log if we have content or if we are waiting
             if mic_peak > 0.001 || sys_peak > 0.001 || mic_buffer.len() > 1000 {
-                println!("Status | Buffers: Mic={}, Sys={} | Peak: Mic={:.4}, Sys={:.4}",
-                    mic_buffer.len(), sys_buffer.len(), mic_peak, sys_peak);
+                println!("VAD Status | State: {:?} | Buffers: Mic={}, Sys={} | Peak: Mic={:.4}, Sys={:.4}",
+                    stream_state, mic_buffer.len(), sys_buffer.len(), mic_peak, sys_peak);
             }
             mic_peak = 0.0;
             sys_peak = 0.0;
         }
 
-        // Emit audio usage to frontend for visualizer
+        // Emit audio levels for frontend visualizer
         if loop_count % 10 == 0 {
             let _ = window.emit("audio-levels", serde_json::json!({
                 "mic": mic_peak,
@@ -193,12 +224,14 @@ async fn start_deepgram_stream(
                             let chunk_size = 640;
                             let actual_size = std::cmp::min(chunk_size, mic_buffer.len());
 
+                            // Build interleaved PCM for this chunk
+                            let mut interleaved_f32 = Vec::with_capacity(actual_size);
                             let mut interleaved_data = Vec::with_capacity(actual_size * 2 * 2);
+
                             for _ in 0..actual_size {
                                 let mic_sample = mic_buffer.pop_front().unwrap_or(0.0f32);
                                 mic_peak = mic_peak.max(mic_sample.abs());
 
-                                // Proper resampling with averaging (Prevent runaway)
                                 let mut sys_sample = 0.0f32;
                                 if !sys_buffer.is_empty() {
                                     sys_accumulator += ratio;
@@ -211,13 +244,15 @@ async fn start_deepgram_stream(
                                         sys_accumulator -= 1.0;
                                     }
                                     if count > 0 {
-                                        sys_sample = (sys_sum / count as f32) * 1.5; // 50% gain boost for Sys
+                                        sys_sample = (sys_sum / count as f32) * 1.5;
                                     }
                                 } else {
-                                    sys_accumulator = 0.0; // Reset if we fall behind to keep future sync
+                                    sys_accumulator = 0.0;
                                 }
 
                                 sys_peak = sys_peak.max(sys_sample.abs());
+                                interleaved_f32.push(mic_sample);
+                                interleaved_f32.push(sys_sample);
 
                                 let mic_i16 = (mic_sample.max(-1.0).min(1.0) * 32767.0) as i16;
                                 let sys_i16 = (sys_sample.max(-1.0).min(1.0) * 32767.0) as i16;
@@ -226,11 +261,102 @@ async fn start_deepgram_stream(
                                 interleaved_data.extend_from_slice(&sys_i16.to_le_bytes());
                             }
 
-                            if !interleaved_data.is_empty() {
-                                if let Err(e) = write.send(Message::Binary(interleaved_data.into())).await {
-                                    eprintln!("Error sending audio to Deepgram: {}", e);
-                                    receive_task.abort();
-                                    return Err(Box::new(e));
+                            if interleaved_data.is_empty() {
+                                continue;
+                            }
+
+                            // ── VAD decision ──────────────────────────────────
+                            let level = rms(&interleaved_f32);
+                            let is_speech = level > VAD_THRESHOLD;
+
+                            match stream_state {
+                                StreamState::Listening => {
+                                    // Store in pre-buffer ring
+                                    pre_buffer.push_back(interleaved_data.clone());
+                                    if pre_buffer.len() > PRE_BUFFER_SIZE {
+                                        pre_buffer.pop_front();
+                                    }
+
+                                    if is_speech {
+                                        vad_positive_count += 1;
+                                        if vad_positive_count >= SPEECH_TRIGGER_COUNT {
+                                            // ── Transition to Streaming ────────
+                                            println!("VAD: Speech detected (RMS={:.4}), opening Deepgram WS", level);
+
+                                            match open_deepgram_ws(api_key, target_sample_rate, transcript_tx.clone()).await {
+                                                Ok((write, recv_task)) => {
+                                                    dg_write = Some(write);
+                                                    dg_receive_task = Some(recv_task);
+
+                                                    // Flush pre-buffer
+                                                    if let Some(ref mut writer) = dg_write {
+                                                        for chunk in pre_buffer.drain(..) {
+                                                            if let Err(e) = writer.send(Message::Binary(chunk.into())).await {
+                                                                eprintln!("VAD: Error flushing pre-buffer: {}", e);
+                                                                dg_write = None;
+                                                                if let Some(task) = dg_receive_task.take() { task.abort(); }
+                                                                stream_state = StreamState::Listening;
+                                                                vad_positive_count = 0;
+                                                                let _ = window.emit("deepgram_state", serde_json::json!({"state": "idle"}));
+                                                                break;
+                                                            }
+                                                        }
+                                                    }
+
+                                                    stream_state = StreamState::Streaming;
+                                                    silence_chunk_count = 0;
+                                                    let _ = window.emit("deepgram_state", serde_json::json!({"state": "streaming"}));
+                                                }
+                                                Err(e) => {
+                                                    eprintln!("VAD: Failed to open Deepgram WS: {}", e);
+                                                    // Stay in Listening, will retry on next speech
+                                                    vad_positive_count = 0;
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        vad_positive_count = 0;
+                                    }
+                                }
+                                StreamState::Streaming => {
+                                    // Send audio to Deepgram
+                                    if let Some(ref mut writer) = dg_write {
+                                        if let Err(e) = writer.send(Message::Binary(interleaved_data.into())).await {
+                                            eprintln!("VAD: Deepgram send error (recovering): {}", e);
+                                            // Recover: close gracefully and return to Listening
+                                            dg_write = None;
+                                            if let Some(task) = dg_receive_task.take() { task.abort(); }
+                                            stream_state = StreamState::Listening;
+                                            vad_positive_count = 0;
+                                            silence_chunk_count = 0;
+                                            let _ = window.emit("deepgram_state", serde_json::json!({"state": "idle"}));
+                                            continue;
+                                        }
+                                    }
+
+                                    if is_speech {
+                                        silence_chunk_count = 0;
+                                    } else {
+                                        silence_chunk_count += 1;
+                                        if silence_chunk_count >= SILENCE_CLOSE_COUNT {
+                                            // ── Silence timeout: close DG, return to Listening ──
+                                            println!("VAD: Silence timeout ({}ms), closing Deepgram WS",
+                                                silence_chunk_count * 40);
+
+                                            if let Some(ref mut writer) = dg_write {
+                                                let _ = writer.send(Message::Text(
+                                                    r#"{"type":"CloseStream"}"#.into()
+                                                )).await;
+                                                let _ = writer.close().await;
+                                            }
+                                            dg_write = None;
+                                            if let Some(task) = dg_receive_task.take() { task.abort(); }
+
+                                            stream_state = StreamState::Listening;
+                                            vad_positive_count = 0;
+                                            let _ = window.emit("deepgram_state", serde_json::json!({"state": "idle"}));
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -255,9 +381,14 @@ async fn start_deepgram_stream(
             _ = cmd_rx.changed() => {
                 let cmd = cmd_rx.borrow().clone();
                 if cmd.as_str() != "start" {
-                    println!("Deepgram: stopping stream due to '{}' command", cmd);
-                    let _ = write.send(Message::Close(None)).await;
-                    receive_task.abort();
+                    println!("VAD: stopping due to '{}' command", cmd);
+                    // Close any active Deepgram WS
+                    if let Some(ref mut writer) = dg_write {
+                        let _ = writer.send(Message::Close(None)).await;
+                    }
+                    dg_write = None;
+                    if let Some(task) = dg_receive_task.take() { task.abort(); }
+                    let _ = window.emit("deepgram_state", serde_json::json!({"state": "idle"}));
                     return Ok(());
                 }
             }
@@ -268,6 +399,11 @@ async fn start_deepgram_stream(
         if sys_buffer.len() > 64000 { sys_buffer.drain(..32000); }
     }
 
-    let _ = receive_task.await;
+    // Cleanup
+    if let Some(ref mut writer) = dg_write {
+        let _ = writer.send(Message::Close(None)).await;
+    }
+    if let Some(task) = dg_receive_task.take() { task.abort(); }
+
     Ok(())
 }

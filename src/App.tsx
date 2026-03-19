@@ -1,10 +1,23 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/dpi";
 import "./App.css";
 import { AudioVisualizer } from "./components/AudioVisualizer";
+
+interface CallSummary {
+  summary: string;
+  keyPoints: string[];
+  prospectSentiment: string;
+  followUpItems: string[];
+  objectionsRaised: string[];
+}
+
+interface CoachingCue {
+  type: 'talk_too_long' | 'speaking_too_fast' | string;
+  message: string;
+}
 
 interface NodePayload {
   nodeId: string;
@@ -134,6 +147,24 @@ function App() {
   // Co-Pilot active state (synced from web app)
   const [isCompanionActive, setIsCompanionActive] = useState(false);
 
+  // Web app connection state (Phase 4)
+  const [isWebAppConnected, setIsWebAppConnected] = useState(false);
+  const [authStatus, setAuthStatus] = useState<'pending' | 'authenticated' | 'failed'>('pending');
+
+  // Talk-to-listen ratio (Phase 5B)
+  const [talkRatio, setTalkRatio] = useState(0.5);
+  const repSpeakTimeRef = useRef(0);
+  const totalSpeakTimeRef = useRef(0);
+  const lastAudioTimestampRef = useRef(Date.now());
+
+  // Coaching cue toast (Phase 5D)
+  const [coachingCue, setCoachingCue] = useState<CoachingCue | null>(null);
+  const coachingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Call summary (Phase 5C)
+  const [callSummary, setCallSummary] = useState<CallSummary | null>(null);
+  const [showSummary, setShowSummary] = useState(false);
+
   // In-overlay "logged" toast
   const [loggedLabel, setLoggedLabel] = useState<string | null>(null);
   const loggedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -234,6 +265,20 @@ function App() {
 
     const unlistenAudio = listen<{ mic: number; sys: number }>("audio-levels", (e) => {
       setLevels(e.payload);
+      // Track talk-to-listen ratio
+      const now = Date.now();
+      const delta = Math.min(now - lastAudioTimestampRef.current, 500); // cap at 500ms
+      lastAudioTimestampRef.current = now;
+      const micActive = e.payload.mic > 0.02;
+      const sysActive = e.payload.sys > 0.02;
+      if (micActive || sysActive) {
+        totalSpeakTimeRef.current += delta;
+        if (micActive) repSpeakTimeRef.current += delta;
+        const total = totalSpeakTimeRef.current;
+        if (total > 0) {
+          setTalkRatio(repSpeakTimeRef.current / total);
+        }
+      }
     });
 
     const unlistenUpdate = listen<string>("update-available", (e) => {
@@ -265,6 +310,12 @@ function App() {
       setTranscriptionState(e.payload.state);
       if (e.payload.state === 'idle') {
         setTranscriptLines([]);
+        // Reset talk ratio tracking
+        repSpeakTimeRef.current = 0;
+        totalSpeakTimeRef.current = 0;
+        setTalkRatio(0.5);
+        // Clear coaching cue and summary
+        setCoachingCue(null);
       }
     });
     const unlistenPractice = listen<{ enabled: boolean }>('practice_mode_state', (e) => {
@@ -303,6 +354,57 @@ function App() {
       loggedTimerRef.current = setTimeout(() => setLoggedLabel(null), 2500);
     });
 
+    // Phase 4: Browser connection state
+    const unlistenBrowserConnected = listen<void>('browser_connected', () => {
+      setIsWebAppConnected(true);
+    });
+    const unlistenBrowserDisconnected = listen<void>('browser_disconnected', () => {
+      setIsWebAppConnected(false);
+    });
+
+    // Phase 3: Auth events
+    const unlistenAuthReceived = listen<void>('auth_received', () => {
+      setAuthStatus('authenticated');
+    });
+    const unlistenAuthFailed = listen<string>('auth_failed', () => {
+      setAuthStatus('failed');
+    });
+
+    // Phase 5D: Coaching cues from web app
+    const unlistenCoaching = listen<CoachingCue>('coaching_cue', (e) => {
+      setCoachingCue(e.payload);
+      if (coachingTimerRef.current) clearTimeout(coachingTimerRef.current);
+      coachingTimerRef.current = setTimeout(() => setCoachingCue(null), 8000);
+    });
+
+    // Phase 5C: Call summary from web app
+    const unlistenCallSummary = listen<CallSummary>('call_summary', (e) => {
+      setCallSummary(e.payload);
+      setShowSummary(true);
+    });
+
+    // Phase 5A: Global shortcut handler
+    const unlistenShortcut = listen<string>('global_shortcut', (e) => {
+      const key = e.payload.toLowerCase();
+      if (key.includes('ctrl+shift+b')) {
+        // Toggle visibility
+        void appWindow.isVisible().then(visible => {
+          if (visible) void appWindow.hide();
+          else { void appWindow.show(); void appWindow.setFocus(); }
+        });
+      } else if (key.includes('ctrl+shift+p')) {
+        // Toggle pause/resume
+        if (transcriptionState === 'recording') handleControl('pause');
+        else if (transcriptionState === 'paused') handleControl('start');
+      } else if (key.includes('ctrl+shift+n')) {
+        // New contact / reset AI context
+        handleResetAIContext();
+      } else if (key.includes('ctrl+shift+o')) {
+        // Quick log outcome — cycle to actions tab
+        setView('actions');
+      }
+    });
+
     return () => {
       unlistenAudio.then(u => u());
       unlistenUpdate.then(u => u());
@@ -319,6 +421,13 @@ function App() {
       unlistenCompanion.then(u => u());
       unlistenScriptsList.then(u => u());
       unlistenCallLogged.then(u => u());
+      unlistenBrowserConnected.then(u => u());
+      unlistenBrowserDisconnected.then(u => u());
+      unlistenAuthReceived.then(u => u());
+      unlistenAuthFailed.then(u => u());
+      unlistenCoaching.then(u => u());
+      unlistenCallSummary.then(u => u());
+      unlistenShortcut.then(u => u());
     };
   }, []);
 
@@ -479,6 +588,18 @@ function App() {
 
   const showNextCall = outcome && outcomeSource === 'auto' && !isPracticeMode;
 
+  // Talk ratio color: green (40-60%), amber (30-40% or 60-70%), red (<30% or >70%)
+  const talkRatioColor = useCallback((ratio: number) => {
+    if (ratio >= 0.4 && ratio <= 0.6) return 'green';
+    if (ratio >= 0.3 && ratio <= 0.7) return 'amber';
+    return 'red';
+  }, []);
+
+  const dismissSummary = useCallback(() => {
+    setShowSummary(false);
+    setCallSummary(null);
+  }, []);
+
   return (
     <div className="overlay-root">
       <header className="overlay-header" data-tauri-drag-region>
@@ -496,6 +617,12 @@ function App() {
             <button className={`view-btn ${view === "transcript" ? "active" : ""}`} onClick={() => setView("transcript")}>Transcript</button>
             <button className={`view-btn ${view === "actions" ? "active" : ""}`} onClick={() => setView("actions")}>⚙</button>
           </div>
+          {transcriptionState === 'recording' && (
+            <div className={`talk-ratio-gauge ${talkRatioColor(talkRatio)}`} title={`You: ${Math.round(talkRatio * 100)}% | Prospect: ${Math.round((1 - talkRatio) * 100)}%`}>
+              <div className="talk-ratio-bar" style={{ width: `${talkRatio * 100}%` }} />
+              <span className="talk-ratio-label">{Math.round(talkRatio * 100)}%</span>
+            </div>
+          )}
           <button
             className={`copilot-btn ${isCompanionActive ? 'active' : ''}`}
             onClick={handleToggleCopilot}
@@ -505,6 +632,67 @@ function App() {
           <button className="close-btn" onClick={handleClose} title="Minimize to tray">✕</button>
         </div>
       </header>
+
+      {/* Waiting overlay — shown when auth is done but web app hasn't connected */}
+      {authStatus === 'authenticated' && !isWebAppConnected && (
+        <div className="waiting-overlay">
+          <div className="waiting-spinner" />
+          <span className="waiting-text">Waiting for web app to connect…</span>
+          <span className="waiting-hint">Open BrainSales in your browser</span>
+        </div>
+      )}
+
+      {/* Auth failed overlay */}
+      {authStatus === 'failed' && (
+        <div className="waiting-overlay error">
+          <span className="waiting-icon">⚠</span>
+          <span className="waiting-text">Authentication failed</span>
+          <span className="waiting-hint">Please relaunch from the web app</span>
+        </div>
+      )}
+
+      {/* Coaching cue toast (Phase 5D) */}
+      {coachingCue && (
+        <div className="coaching-toast">
+          <span className="coaching-icon">💡</span>
+          <span className="coaching-msg">{coachingCue.message}</span>
+          <button className="coaching-dismiss" onClick={() => setCoachingCue(null)}>✕</button>
+        </div>
+      )}
+
+      {/* Call Summary Panel (Phase 5C) */}
+      {showSummary && callSummary && (
+        <div className="summary-panel">
+          <div className="summary-header">
+            <span className="summary-title">📊 Call Summary</span>
+            <button className="summary-close" onClick={dismissSummary}>✕</button>
+          </div>
+          <div className="summary-body">
+            <p className="summary-text">{callSummary.summary}</p>
+            {callSummary.keyPoints.length > 0 && (
+              <div className="summary-section">
+                <span className="summary-section-title">Key Points</span>
+                <ul>{callSummary.keyPoints.map((kp, i) => <li key={i}>{kp}</li>)}</ul>
+              </div>
+            )}
+            {callSummary.followUpItems.length > 0 && (
+              <div className="summary-section">
+                <span className="summary-section-title">Follow-up Items</span>
+                <ul>{callSummary.followUpItems.map((f, i) => <li key={i}>{f}</li>)}</ul>
+              </div>
+            )}
+            {callSummary.objectionsRaised.length > 0 && (
+              <div className="summary-section">
+                <span className="summary-section-title">Objections Raised</span>
+                <ul>{callSummary.objectionsRaised.map((o, i) => <li key={i}>{o}</li>)}</ul>
+              </div>
+            )}
+            <div className="summary-sentiment">
+              Prospect Sentiment: <strong>{callSummary.prospectSentiment}</strong>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* AI Suggestion Chip */}
       {aiSuggestion && (

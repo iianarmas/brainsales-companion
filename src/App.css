@@ -1429,3 +1429,255 @@ body {
   color: var(--primary);
 }
 
+/* ── Waiting Overlay (Phase 4) ─────────────── */
+.waiting-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: rgba(var(--bg), 0.92);
+  backdrop-filter: blur(6px);
+}
+
+.waiting-overlay.error {
+  background: rgba(var(--bg), 0.95);
+}
+
+.waiting-spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid var(--border);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.waiting-icon {
+  font-size: 28px;
+}
+
+.waiting-text {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.waiting-hint {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+/* ── Talk-to-Listen Ratio Gauge ────────────── */
+.talk-ratio-gauge {
+  position: relative;
+  width: 40px;
+  height: 18px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  cursor: default;
+}
+
+.talk-ratio-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  transition: width 0.5s ease, background 0.3s;
+  border-radius: 3px 0 0 3px;
+}
+
+.talk-ratio-gauge.green .talk-ratio-bar {
+  background: rgba(74, 222, 128, 0.35);
+}
+.talk-ratio-gauge.amber .talk-ratio-bar {
+  background: rgba(251, 191, 36, 0.35);
+}
+.talk-ratio-gauge.red .talk-ratio-bar {
+  background: rgba(248, 113, 113, 0.35);
+}
+
+.talk-ratio-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.talk-ratio-gauge.green .talk-ratio-label { color: var(--green); }
+.talk-ratio-gauge.amber .talk-ratio-label { color: var(--amber); }
+.talk-ratio-gauge.red .talk-ratio-label { color: var(--red); }
+
+/* ── Coaching Cue Toast (Phase 5D) ─────────── */
+.coaching-toast {
+  margin: 6px 8px 0;
+  padding: 7px 10px;
+  background: rgba(99, 102, 241, 0.10);
+  border: 1px solid rgba(99, 102, 241, 0.25);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  animation: slide-in 0.3s ease-out;
+}
+
+@keyframes slide-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.coaching-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.coaching-msg {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text);
+  line-height: 1.4;
+  flex: 1;
+}
+
+.coaching-dismiss {
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 9px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: all 0.12s;
+}
+
+.coaching-dismiss:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+/* ── Call Summary Panel (Phase 5C) ─────────── */
+.summary-panel {
+  margin: 6px 8px 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  flex-shrink: 0;
+  max-height: 260px;
+  display: flex;
+  flex-direction: column;
+  animation: slide-in 0.3s ease-out;
+}
+
+.summary-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.summary-title {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.summary-close {
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 9px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.12s;
+}
+
+.summary-close:hover {
+  background: rgba(248, 113, 113, 0.15);
+  color: var(--red);
+}
+
+.summary-body {
+  padding: 8px 10px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
+}
+
+.summary-text {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text);
+  margin: 0;
+}
+
+.summary-section {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.summary-section-title {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.summary-section ul {
+  margin: 0;
+  padding-left: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.summary-section li {
+  font-size: 10px;
+  color: var(--text);
+  line-height: 1.4;
+}
+
+.summary-sentiment {
+  font-size: 10px;
+  color: var(--text-muted);
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.summary-sentiment strong {
+  color: var(--primary);
+}
+

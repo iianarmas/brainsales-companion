@@ -7,6 +7,12 @@ use tokio::sync::{broadcast, watch};
 use audio::capture::AudioCapture;
 use tauri::{Manager, Emitter};
 
+#[derive(Clone, Debug)]
+pub struct AuthInfo {
+    pub user_id: String,
+    pub org_id: String,
+}
+
 pub struct AppState {
     pub audio_tx: broadcast::Sender<Vec<f32>>,
     pub audio_output_tx: broadcast::Sender<Vec<f32>>,
@@ -15,6 +21,34 @@ pub struct AppState {
     pub capture: Mutex<AudioCapture>,
     pub is_running: Mutex<bool>,
     pub cmd_tx: Arc<watch::Sender<String>>,
+    pub auth_info: Arc<Mutex<Option<AuthInfo>>>,
+}
+
+/// The web app URL used for nonce exchange. Defaults to production;
+/// can be overridden via the BRAINSALES_APP_URL env var.
+fn web_app_url() -> String {
+    std::env::var("BRAINSALES_APP_URL")
+        .unwrap_or_else(|_| "https://app.brainsales.tech".to_string())
+}
+
+/// Exchange a one-time nonce with the web app API to get auth info.
+async fn exchange_nonce(nonce: &str) -> Result<AuthInfo, Box<dyn std::error::Error + Send + Sync>> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{}/api/auth/companion-nonce/exchange", web_app_url()))
+        .json(&serde_json::json!({ "nonce": nonce }))
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        return Err(format!("Exchange failed: {}", resp.status()).into());
+    }
+
+    let data: serde_json::Value = resp.json().await?;
+    Ok(AuthInfo {
+        user_id: data["userId"].as_str().unwrap_or_default().to_string(),
+        org_id: data["orgId"].as_str().unwrap_or_default().to_string(),
+    })
 }
 
 #[tauri::command]
@@ -42,6 +76,8 @@ async fn start_companion(
 
     let cmd_rx = state.cmd_tx.subscribe();
     let cmd_tx_for_server = state.cmd_tx.clone();
+
+    let auth_info = state.auth_info.clone();
 
     // Start Audio Capture
     let ((mic_sample_rate, _mic_channels), (_sys_sample_rate, _sys_channels)) = {
@@ -72,7 +108,7 @@ async fn start_companion(
     // Local WebSocket server: forwards transcripts to web app, reads control commands, handles sync messages
     tauri::async_runtime::spawn(async move {
         println!("Starting local WebSocket server task...");
-        server::start_local_server(transcript_rx, to_browser_tx, cmd_tx_for_server, app).await;
+        server::start_local_server(transcript_rx, to_browser_tx, cmd_tx_for_server, app, auth_info).await;
     });
 
     *is_running = true;
@@ -129,7 +165,7 @@ async fn set_mic_gain(
     let audio_tx = state.audio_tx.clone();
     let audio_output_tx = state.audio_output_tx.clone();
     let mut capture = state.capture.lock().unwrap();
-    
+
     // Only restart if gain actually changed and we are already running
     if (capture.mic_gain - gain).abs() > 0.001 {
         capture.mic_gain = gain;
@@ -141,6 +177,12 @@ async fn set_mic_gain(
         }
     }
     Ok(())
+}
+
+#[tauri::command]
+async fn show_window(window: tauri::Window) {
+    let _ = window.show();
+    let _ = window.set_focus();
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -164,13 +206,20 @@ pub fn run() {
             capture: Mutex::new(AudioCapture::new()),
             is_running: Mutex::new(false),
             cmd_tx,
+            auth_info: Arc::new(Mutex::new(None)),
         })
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_autostart::init(
-            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            Some(vec![]),
-        ))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, shortcut, event| {
+                    if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                        let _ = app.emit("global_shortcut", shortcut.to_string());
+                    }
+                })
+                .build(),
+        )
         .setup(|app| {
             // Position window at bottom-right of primary monitor (fallback; JS restores saved position)
             let window = app.get_webview_window("main").unwrap();
@@ -184,6 +233,13 @@ pub fn run() {
 
                 let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
             }
+
+            // Register global shortcuts
+            use tauri_plugin_global_shortcut::GlobalShortcutExt;
+            let _ = app.global_shortcut().register("ctrl+shift+b");
+            let _ = app.global_shortcut().register("ctrl+shift+p");
+            let _ = app.global_shortcut().register("ctrl+shift+n");
+            let _ = app.global_shortcut().register("ctrl+shift+o");
 
             // System tray: icon + menu
             let quit = tauri::menu::MenuItem::with_id(app, "quit", "Quit BrainSales Companion", true, None::<&str>)?;
@@ -232,9 +288,60 @@ pub fn run() {
                 }
             });
 
-            // Enable autostart on Windows login
-            use tauri_plugin_autostart::ManagerExt;
-            let _ = app.autolaunch().enable();
+            // Handle deep link URL for auth
+            let app_handle = app.handle().clone();
+            app.listen("deep-link://new-url", move |event| {
+                if let Ok(urls) = serde_json::from_str::<Vec<String>>(event.payload()) {
+                    if let Some(url_str) = urls.first() {
+                        if let Ok(parsed) = url::Url::parse(url_str) {
+                            let params: std::collections::HashMap<String, String> =
+                                parsed.query_pairs().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+
+                            if let Some(nonce) = params.get("nonce") {
+                                let nonce = nonce.clone();
+                                let ah = app_handle.clone();
+
+                                // Also store userId/orgId from URL params as a fallback
+                                let url_user_id = params.get("userId").cloned().unwrap_or_default();
+                                let url_org_id = params.get("orgId").cloned().unwrap_or_default();
+
+                                tokio::spawn(async move {
+                                    match exchange_nonce(&nonce).await {
+                                        Ok(auth) => {
+                                            let state = ah.state::<AppState>();
+                                            *state.auth_info.lock().unwrap() = Some(auth);
+                                            let _ = ah.emit("auth_received", ());
+                                            // Show the window when launched via deep link
+                                            if let Some(w) = ah.get_webview_window("main") {
+                                                let _ = w.show();
+                                                let _ = w.set_focus();
+                                            }
+                                        }
+                                        Err(e) => {
+                                            eprintln!("Nonce exchange failed: {} — using URL params as fallback", e);
+                                            // Fallback: use the userId/orgId from URL params directly
+                                            if !url_user_id.is_empty() && !url_org_id.is_empty() {
+                                                let state = ah.state::<AppState>();
+                                                *state.auth_info.lock().unwrap() = Some(AuthInfo {
+                                                    user_id: url_user_id,
+                                                    org_id: url_org_id,
+                                                });
+                                                let _ = ah.emit("auth_received", ());
+                                                if let Some(w) = ah.get_webview_window("main") {
+                                                    let _ = w.show();
+                                                    let _ = w.set_focus();
+                                                }
+                                            } else {
+                                                let _ = ah.emit("auth_failed", e.to_string());
+                                            }
+                                        }
+                                    }
+                                });
+                            }
+                        }
+                    }
+                }
+            });
 
             // Check for updates in the background
             let handle = app.handle().clone();
@@ -249,7 +356,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![start_companion, send_to_browser, install_update, list_audio_devices, set_audio_devices, set_mic_gain])
+        .invoke_handler(tauri::generate_handler![start_companion, send_to_browser, install_update, list_audio_devices, set_audio_devices, set_mic_gain, show_window])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

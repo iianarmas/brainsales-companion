@@ -39,8 +39,14 @@ interface OpeningScript {
   title: string;
 }
 
+interface ScriptNode {
+  id: string;
+  title: string;
+  script: string;
+}
+
 type ViewMode = "script" | "transcript" | "actions";
-type Theme = "dark" | "darker" | "slate";
+type Theme = "dark" | "darker" | "slate" | "purple" | "rose" | "teal";
 
 const OPACITY_LEVELS = [
   { label: "S", title: "Solid (96%)", value: 0.96 },
@@ -115,10 +121,15 @@ function App() {
 
   // AI correction mode
   const [showCorrectionPicker, setShowCorrectionPicker] = useState(false);
+  const [correctionSearch, setCorrectionSearch] = useState("");
+  const [allNodes, setAllNodes] = useState<ScriptNode[]>([]);
 
-  // Theme and font scale
+  // Theme, font scale, and custom primary color
   const [theme, setTheme] = useState<Theme>(getInitialTheme);
   const [fontScale, setFontScale] = useState<number>(getInitialFontScale);
+  const [customPrimary, setCustomPrimary] = useState<string>(() => {
+    try { return localStorage.getItem("companion_custom_primary") ?? ""; } catch { return ""; }
+  });
 
   // Co-Pilot active state (synced from web app)
   const [isCompanionActive, setIsCompanionActive] = useState(false);
@@ -136,11 +147,17 @@ function App() {
     try { localStorage.setItem("companion_opacity", String(opacity)); } catch {}
   }, [opacity]);
 
-  // Apply theme class and CSS variable
+  // Apply theme class and optional custom primary color
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
     try { localStorage.setItem("companion_theme", theme); } catch {}
-  }, [theme]);
+    if (customPrimary) {
+      document.documentElement.style.setProperty("--primary", customPrimary);
+    } else {
+      document.documentElement.style.removeProperty("--primary");
+    }
+    try { localStorage.setItem("companion_custom_primary", customPrimary); } catch {}
+  }, [theme, customPrimary]);
 
   // Apply font scale via CSS zoom (scales all content uniformly)
   useEffect(() => {
@@ -275,6 +292,17 @@ function App() {
       setIsCompanionActive(e.payload.active);
     });
 
+    const unlistenScriptsList = listen<{ nodes: ScriptNode[] }>('scripts_list', (e) => {
+      setAllNodes(e.payload.nodes);
+    });
+
+    const unlistenCallLogged = listen<{ outcome: string | null }>('call_logged', (e) => {
+      const o = e.payload.outcome;
+      if (loggedTimerRef.current) clearTimeout(loggedTimerRef.current);
+      setLoggedLabel(o ? (OUTCOME_LABELS[o] ?? o) : "Call logged");
+      loggedTimerRef.current = setTimeout(() => setLoggedLabel(null), 2500);
+    });
+
     return () => {
       unlistenAudio.then(u => u());
       unlistenUpdate.then(u => u());
@@ -289,6 +317,8 @@ function App() {
       unlistenOpeningScripts.then(u => u());
       unlistenActiveFlow.then(u => u());
       unlistenCompanion.then(u => u());
+      unlistenScriptsList.then(u => u());
+      unlistenCallLogged.then(u => u());
     };
   }, []);
 
@@ -317,9 +347,11 @@ function App() {
         handleNavigate(aiSuggestion.nodeId);
       }
       setShowCorrectionPicker(false);
+      setCorrectionSearch("");
       setAiSuggestion(null);
     } else {
       setShowCorrectionPicker(true);
+      setCorrectionSearch("");
     }
   };
 
@@ -336,6 +368,7 @@ function App() {
     handleNavigate(nodeId);
     setAiSuggestion(null);
     setShowCorrectionPicker(false);
+    setCorrectionSearch("");
   };
 
   const handleDismissSuggestion = () => {
@@ -345,6 +378,7 @@ function App() {
     });
     setAiSuggestion(null);
     setShowCorrectionPicker(false);
+    setCorrectionSearch("");
   };
 
   const handleControl = (cmd: 'start' | 'pause' | 'stop') => {
@@ -496,13 +530,30 @@ function App() {
             </button>
             <button className="ai-dismiss-btn" onClick={handleDismissSuggestion}>✕</button>
           </div>
-          {showCorrectionPicker && currentNode && (
+          {showCorrectionPicker && (
             <div className="ai-correction">
               <div className="ai-correction-label">Pick correct node:</div>
+              <input
+                className="ai-correction-search"
+                type="text"
+                placeholder="Search scripts…"
+                value={correctionSearch}
+                onChange={e => setCorrectionSearch(e.target.value)}
+                autoFocus
+              />
               <div className="ai-correction-list">
-                {currentNode.responses.map((r, i) => (
-                  <button key={i} className="ai-correction-btn" onClick={() => handleAICorrection(r.nextNode)}>
-                    {r.label}
+                {(correctionSearch.trim()
+                  ? allNodes.filter(n =>
+                      n.title.toLowerCase().includes(correctionSearch.toLowerCase()) ||
+                      n.script.toLowerCase().includes(correctionSearch.toLowerCase())
+                    )
+                  : (currentNode?.responses ?? []).map(r => ({ id: r.nextNode, title: r.label, script: "" }))
+                ).map((node) => (
+                  <button key={node.id} className="ai-correction-btn" onClick={() => handleAICorrection(node.id)}>
+                    <span className="ai-correction-title">{node.title}</span>
+                    {node.script && (
+                      <span className="ai-correction-script">{node.script}</span>
+                    )}
                   </button>
                 ))}
               </div>
@@ -697,6 +748,24 @@ function App() {
                   <button className={`theme-swatch dark ${theme === 'dark' ? 'active' : ''}`} onClick={() => setTheme('dark')} title="Dark" />
                   <button className={`theme-swatch darker ${theme === 'darker' ? 'active' : ''}`} onClick={() => setTheme('darker')} title="Darker (OLED)" />
                   <button className={`theme-swatch slate ${theme === 'slate' ? 'active' : ''}`} onClick={() => setTheme('slate')} title="Slate Blue" />
+                  <button className={`theme-swatch purple ${theme === 'purple' ? 'active' : ''}`} onClick={() => setTheme('purple')} title="Deep Purple" />
+                  <button className={`theme-swatch rose ${theme === 'rose' ? 'active' : ''}`} onClick={() => setTheme('rose')} title="Rose" />
+                  <button className={`theme-swatch teal ${theme === 'teal' ? 'active' : ''}`} onClick={() => setTheme('teal')} title="Teal" />
+                </div>
+              </div>
+              <div className="appearance-row">
+                <span className="device-label">Accent Color</span>
+                <div className="color-picker-row">
+                  <input
+                    type="color"
+                    className="accent-color-input"
+                    value={customPrimary || "#818cf8"}
+                    onChange={e => setCustomPrimary(e.target.value)}
+                    title="Custom accent color"
+                  />
+                  {customPrimary && (
+                    <button className="accent-reset-btn" onClick={() => setCustomPrimary("")} title="Reset to theme default">✕</button>
+                  )}
                 </div>
               </div>
               <div className="appearance-row">

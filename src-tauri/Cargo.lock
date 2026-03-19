@@ -315,7 +315,7 @@ dependencies = [
 
 [[package]]
 name = "brainsales-companion"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "cpal",
  "dotenv",

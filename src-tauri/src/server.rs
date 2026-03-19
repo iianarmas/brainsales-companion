@@ -1,4 +1,5 @@
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, watch};
 use futures_util::{StreamExt, SinkExt};
@@ -30,6 +31,10 @@ pub async fn start_local_server(
     let listener = TcpListener::bind(&addr).await.expect("Failed to bind");
     println!("Listening on: {}", addr);
 
+    // Connection generation counter: prevents stale browser_disconnected events
+    // from old connections overriding a newer browser_connected.
+    let conn_gen = Arc::new(AtomicU64::new(0));
+
     while let Ok((stream, peer_addr)) = listener.accept().await {
         println!("New connection from: {}", peer_addr);
         let mut rx_clone = rx.resubscribe();
@@ -37,6 +42,7 @@ pub async fn start_local_server(
         let cmd_tx_clone = cmd_tx.clone();
         let app_handle_clone = app_handle.clone();
         let auth_info_clone = auth_info.clone();
+        let conn_gen_clone = conn_gen.clone();
 
         tokio::spawn(async move {
             let ws_stream = match tokio_tungstenite::accept_async(stream).await {
@@ -78,8 +84,8 @@ pub async fn start_local_server(
                                         )).await;
                                     }
                                 } else {
-                                    // No auth info stored — only accept in dev mode
-                                    let is_dev = std::env::var("BRAINSALES_DEV").unwrap_or_default() == "1";
+                                    // No auth info stored — only accept in dev/debug mode
+                                    let is_dev = cfg!(debug_assertions) || std::env::var("BRAINSALES_DEV").unwrap_or_default() == "1";
                                     if is_dev {
                                         authed = true;
                                         let _ = write.send(tokio_tungstenite::tungstenite::protocol::Message::Text(
@@ -110,9 +116,14 @@ pub async fn start_local_server(
                 return;
             }
 
+            // Stamp this connection with a generation number so stale
+            // browser_disconnected events don't override a newer connection.
+            let my_gen = conn_gen_clone.fetch_add(1, Ordering::SeqCst) + 1;
+
             // Read task: control commands + typed sync messages from browser
             let cmd_tx_read = cmd_tx_clone.clone();
             let app_for_disconnect = app_handle_clone.clone();
+            let conn_gen_read = conn_gen_clone.clone();
             tokio::spawn(async move {
                 while let Some(Ok(msg)) = read.next().await {
                     if let tokio_tungstenite::tungstenite::protocol::Message::Text(text) = msg {
@@ -133,9 +144,14 @@ pub async fn start_local_server(
                     }
                 }
                 // Web app disconnected — ensure Deepgram stops
-                println!("Web app disconnected, sending stop command");
+                println!("Web app disconnected (read task), sending stop command");
                 let _ = cmd_tx_read.send("stop".to_string());
-                let _ = app_for_disconnect.emit("browser_disconnected", ());
+                // Only emit browser_disconnected if no newer connection has since connected
+                if conn_gen_read.load(Ordering::SeqCst) == my_gen {
+                    let _ = app_for_disconnect.emit("browser_disconnected", ());
+                } else {
+                    println!("Suppressed stale browser_disconnected (gen {} < current {})", my_gen, conn_gen_read.load(Ordering::SeqCst));
+                }
             });
 
             // Write loop: forward transcripts AND to_browser messages (navigate, ai_feedback) to browser
@@ -171,8 +187,13 @@ pub async fn start_local_server(
                     }
                 }
             }
-            println!("Connection from {} closed", peer_addr);
-            let _ = app_handle_clone.emit("browser_disconnected", ());
+            println!("Connection from {} closed (write loop)", peer_addr);
+            // Only emit browser_disconnected if no newer connection has since connected
+            if conn_gen_clone.load(Ordering::SeqCst) == my_gen {
+                let _ = app_handle_clone.emit("browser_disconnected", ());
+            } else {
+                println!("Suppressed stale browser_disconnected from write loop (gen {} < current {})", my_gen, conn_gen_clone.load(Ordering::SeqCst));
+            }
         });
     }
 }

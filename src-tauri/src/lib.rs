@@ -187,8 +187,9 @@ async fn show_window(window: tauri::Window) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Load .env file automatically
+    // Load .env file — try CWD first, then src-tauri/.env
     dotenv::dotenv().ok();
+    dotenv::from_path("src-tauri/.env").ok();
 
     let (audio_tx, _) = broadcast::channel::<Vec<f32>>(1000);
     let (audio_output_tx, _) = broadcast::channel::<Vec<f32>>(1000);
@@ -347,12 +348,16 @@ pub fn run() {
             {
                 let ah = app.handle().clone();
                 let auth_check = app.state::<AppState>().auth_info.clone();
-                let is_dev = std::env::var("BRAINSALES_DEV").unwrap_or_default() == "1";
+                let is_dev = cfg!(debug_assertions) || std::env::var("BRAINSALES_DEV").unwrap_or_default() == "1";
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                     let has_auth = auth_check.lock().unwrap().is_some();
-                    if !has_auth && !is_dev {
-                        let _ = ah.emit("auth_failed", "not_launched_from_web_app");
+                    if !has_auth {
+                        if is_dev {
+                            let _ = ah.emit("auth_received", ());
+                        } else {
+                            let _ = ah.emit("auth_failed", "not_launched_from_web_app");
+                        }
                     }
                 });
             }

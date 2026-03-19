@@ -5,7 +5,7 @@ pub mod server;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, watch};
 use audio::capture::AudioCapture;
-use tauri::{Manager, Emitter};
+use tauri::{Manager, Emitter, Listener};
 
 #[derive(Clone, Debug)]
 pub struct AuthInfo {
@@ -342,6 +342,20 @@ pub fn run() {
                     }
                 }
             });
+
+            // If no deep-link auth arrives within 3 seconds, tell the frontend
+            {
+                let ah = app.handle().clone();
+                let auth_check = app.state::<AppState>().auth_info.clone();
+                let is_dev = std::env::var("BRAINSALES_DEV").unwrap_or_default() == "1";
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    let has_auth = auth_check.lock().unwrap().is_some();
+                    if !has_auth && !is_dev {
+                        let _ = ah.emit("auth_failed", "not_launched_from_web_app");
+                    }
+                });
+            }
 
             // Check for updates in the background
             let handle = app.handle().clone();

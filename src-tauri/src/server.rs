@@ -78,13 +78,19 @@ pub async fn start_local_server(
                                         )).await;
                                     }
                                 } else {
-                                    // No auth info stored yet — accept anyway for backward compat
-                                    // (companion was launched without deep link, e.g. during development)
-                                    authed = true;
-                                    let _ = write.send(tokio_tungstenite::tungstenite::protocol::Message::Text(
-                                        serde_json::json!({ "type": "auth_confirmed" }).to_string().into()
-                                    )).await;
-                                    let _ = app_handle_clone.emit("browser_connected", ());
+                                    // No auth info stored — only accept in dev mode
+                                    let is_dev = std::env::var("BRAINSALES_DEV").unwrap_or_default() == "1";
+                                    if is_dev {
+                                        authed = true;
+                                        let _ = write.send(tokio_tungstenite::tungstenite::protocol::Message::Text(
+                                            serde_json::json!({ "type": "auth_confirmed" }).to_string().into()
+                                        )).await;
+                                        let _ = app_handle_clone.emit("browser_connected", ());
+                                    } else {
+                                        let _ = write.send(tokio_tungstenite::tungstenite::protocol::Message::Text(
+                                            serde_json::json!({ "type": "auth_rejected", "reason": "not_launched_from_web_app" }).to_string().into()
+                                        )).await;
+                                    }
                                 }
                             }
                         }

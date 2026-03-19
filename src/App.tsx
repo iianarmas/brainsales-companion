@@ -600,6 +600,48 @@ function App() {
     setCallSummary(null);
   }, []);
 
+  // Gate: require deep-link auth before showing full UI
+  if (authStatus === 'pending') {
+    return (
+      <div className="overlay-root">
+        <header className="overlay-header" data-tauri-drag-region>
+          <div className="status-pill" data-tauri-drag-region>
+            <div className="status-dot" />
+            <span className="brand" data-tauri-drag-region>BrainSales</span>
+          </div>
+          <div className="header-controls">
+            <button className="close-btn" onClick={handleClose} title="Minimize to tray">✕</button>
+          </div>
+        </header>
+        <div className="waiting-overlay">
+          <div className="waiting-spinner" />
+          <span className="waiting-text">Authenticating…</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (authStatus === 'failed') {
+    return (
+      <div className="overlay-root">
+        <header className="overlay-header" data-tauri-drag-region>
+          <div className="status-pill" data-tauri-drag-region>
+            <div className="status-dot" />
+            <span className="brand" data-tauri-drag-region>BrainSales</span>
+          </div>
+          <div className="header-controls">
+            <button className="close-btn" onClick={handleClose} title="Minimize to tray">✕</button>
+          </div>
+        </header>
+        <div className="waiting-overlay error">
+          <span className="waiting-icon">🔒</span>
+          <span className="waiting-text">Launch from the Web App</span>
+          <span className="waiting-hint">Open BrainSales in your browser and click<br/>"Launch Companion" from the profile menu.</span>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="overlay-root">
       <header className="overlay-header" data-tauri-drag-region>
@@ -639,15 +681,6 @@ function App() {
           <div className="waiting-spinner" />
           <span className="waiting-text">Waiting for web app to connect…</span>
           <span className="waiting-hint">Open BrainSales in your browser</span>
-        </div>
-      )}
-
-      {/* Auth failed overlay */}
-      {authStatus === 'failed' && (
-        <div className="waiting-overlay error">
-          <span className="waiting-icon">⚠</span>
-          <span className="waiting-text">Authentication failed</span>
-          <span className="waiting-hint">Please relaunch from the web app</span>
         </div>
       )}
 

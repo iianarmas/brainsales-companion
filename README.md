@@ -4,7 +4,7 @@ A lightweight desktop companion app for [BrainSales](https://brainsales.app) tha
 
 ## Features
 
-- **Always-on-top mini player** — compact 320×200 window that stays visible during calls
+- **Always-on-top mini player** — compact 320×200 window that stays visible during calls unless minimized
 - **Real-time audio visualizer** — live feedback for microphone and system audio
 - **Deepgram transcription** — low-latency speech-to-text via Deepgram Nova-2
 - **WebSocket bridge** — streams transcripts to the BrainSales web app on port 4141

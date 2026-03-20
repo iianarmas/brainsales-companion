@@ -145,7 +145,7 @@ function App() {
   });
 
   // Co-Pilot active state (synced from web app)
-  const [isCompanionActive, setIsCompanionActive] = useState(false);
+  const [, setIsCompanionActive] = useState(false);
 
   // Web app connection state (Phase 4)
   const [isWebAppConnected, setIsWebAppConnected] = useState(false);
@@ -449,6 +449,10 @@ function App() {
     };
   }, []);
 
+  const handleMinimize = async () => {
+    await appWindow.hide();
+  };
+
   const handleClose = async () => {
     await appWindow.close();
   };
@@ -624,7 +628,8 @@ function App() {
             <span className="brand" data-tauri-drag-region>BrainSales</span>
           </div>
           <div className="header-controls">
-            <button className="close-btn" onClick={handleClose} title="Minimize to tray">✕</button>
+            <button className="minimize-btn" onClick={handleMinimize} title="Minimize to tray">─</button>
+            <button className="close-btn" onClick={handleClose} title="Close">✕</button>
           </div>
         </header>
         <div className="waiting-overlay">
@@ -644,7 +649,8 @@ function App() {
             <span className="brand" data-tauri-drag-region>BrainSales</span>
           </div>
           <div className="header-controls">
-            <button className="close-btn" onClick={handleClose} title="Minimize to tray">✕</button>
+            <button className="minimize-btn" onClick={handleMinimize} title="Minimize to tray">─</button>
+            <button className="close-btn" onClick={handleClose} title="Close">✕</button>
           </div>
         </header>
         <div className="waiting-overlay error">
@@ -680,7 +686,8 @@ function App() {
             </div>
           )}
           <button className="opacity-btn" onClick={cycleOpacity} title={opacityBtn.title}>{opacityBtn.label}</button>
-          <button className="close-btn" onClick={handleClose} title="Minimize to tray">✕</button>
+          <button className="minimize-btn" onClick={handleMinimize} title="Minimize to tray">─</button>
+          <button className="close-btn" onClick={handleClose} title="Close">✕</button>
         </div>
       </header>
 

@@ -204,6 +204,27 @@ body {
   color: var(--text);
 }
 
+.minimize-btn {
+  font-size: 11px;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+  -webkit-app-region: no-drag;
+}
+
+.minimize-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
 .close-btn {
   font-size: 11px;
   width: 22px;

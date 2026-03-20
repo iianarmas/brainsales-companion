@@ -280,14 +280,7 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            // Intercept window close → hide to tray instead
-            let window_clone = window.clone();
-            window.on_window_event(move |event| {
-                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                    api.prevent_close();
-                    let _ = window_clone.hide();
-                }
-            });
+            // No close interception — close button quits the app
 
             // Handle deep link URL for auth
             let app_handle = app.handle().clone();

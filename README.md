@@ -8,6 +8,8 @@ A lightweight desktop companion app for [BrainSales](https://brainsales.app) tha
 - **Real-time audio visualizer** — live feedback for microphone and system audio
 - **Deepgram transcription** — low-latency speech-to-text via Deepgram Nova-2
 - **WebSocket bridge** — streams transcripts to the BrainSales web app on port 4141
+- **Fixed bottom controls** — outcome buttons and play/pause/stop are always visible regardless of scroll position
+- **Persistent preferences** — audio device selections and window position/size are restored across app restarts
 - **System tray** — minimize to tray instead of closing; starts automatically on Windows login
 - **Auto-update** — notifies you when a new version is available and installs it in one click
 

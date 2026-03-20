@@ -198,20 +198,28 @@ function App() {
 
   // Position + size persistence
   useEffect(() => {
-    try {
-      const savedPos = localStorage.getItem("companion_pos");
-      if (savedPos) {
-        const { x, y } = JSON.parse(savedPos);
-        void appWindow.setPosition(new PhysicalPosition(x, y));
-      }
-      const savedSize = localStorage.getItem("companion_size");
-      if (savedSize) {
-        const { w, h } = JSON.parse(savedSize);
-        void appWindow.setSize(new PhysicalSize(w, h));
-      }
-    } catch {}
+    let restoring = true;
+
+    const restore = async () => {
+      try {
+        const savedPos = localStorage.getItem("companion_pos");
+        if (savedPos) {
+          const { x, y } = JSON.parse(savedPos);
+          await appWindow.setPosition(new PhysicalPosition(x, y));
+        }
+        const savedSize = localStorage.getItem("companion_size");
+        if (savedSize) {
+          const { w, h } = JSON.parse(savedSize);
+          await appWindow.setSize(new PhysicalSize(w, h));
+        }
+      } catch {}
+      // Wait for move/resize events triggered by restoration to settle
+      setTimeout(() => { restoring = false; }, 500);
+    };
+    void restore();
 
     const unlistenMove = appWindow.listen("tauri://move", async () => {
+      if (restoring) return;
       try {
         const pos = await appWindow.outerPosition();
         localStorage.setItem("companion_pos", JSON.stringify({ x: pos.x, y: pos.y }));
@@ -219,6 +227,7 @@ function App() {
     });
 
     const unlistenResize = appWindow.listen("tauri://resize", async () => {
+      if (restoring) return;
       try {
         const size = await appWindow.outerSize();
         localStorage.setItem("companion_size", JSON.stringify({ w: size.width, h: size.height }));
@@ -229,6 +238,15 @@ function App() {
       unlistenMove.then(u => u());
       unlistenResize.then(u => u());
     };
+  }, []);
+
+  // Sync saved audio device preferences to Rust backend on mount
+  useEffect(() => {
+    const savedInput = localStorage.getItem('preferred_input');
+    const savedOutput = localStorage.getItem('preferred_output');
+    if (savedInput || savedOutput) {
+      void invoke('set_audio_devices', { input: savedInput, output: savedOutput });
+    }
   }, []);
 
   // Auto-scroll transcript
@@ -534,10 +552,6 @@ function App() {
     });
   };
 
-  const handleToggleCopilot = () => {
-    void invoke('send_to_browser', { payload: JSON.stringify({ type: 'toggle_companion' }) });
-  };
-
   const fetchDevices = async () => {
     try {
       const result = await invoke<{ inputs: string[]; outputs: string[] }>('list_audio_devices');
@@ -665,11 +679,6 @@ function App() {
               <span className="talk-ratio-label">{Math.round(talkRatio * 100)}%</span>
             </div>
           )}
-          <button
-            className={`copilot-btn ${isCompanionActive ? 'active' : ''}`}
-            onClick={handleToggleCopilot}
-            title={isCompanionActive ? "Co-Pilot is open" : "Open Co-Pilot"}
-          >🤖</button>
           <button className="opacity-btn" onClick={cycleOpacity} title={opacityBtn.title}>{opacityBtn.label}</button>
           <button className="close-btn" onClick={handleClose} title="Minimize to tray">✕</button>
         </div>
@@ -849,32 +858,6 @@ function App() {
                   </div>
                 )}
 
-                {/* Next Call button — appears when AI auto-detected an outcome */}
-                {showNextCall && (
-                  <button className="next-call-btn" onClick={handleNextCall}>
-                    ↩ Next Call
-                  </button>
-                )}
-
-                {/* Outcome logging rows */}
-                <div className="outcome-log-section">
-                  <div className="outcome-log-row dead-end-row">
-                    <button className="log-btn dead-end" onClick={() => handleLogOutcome('no_answer')}>📵 No Answer</button>
-                    <button className="log-btn dead-end" onClick={() => {
-                      if (currentNode?.voicemailNodeId) handleNavigate(currentNode.voicemailNodeId);
-                      handleLogOutcome('left_voicemail');
-                    }}>📨 Voicemail</button>
-                    <button className="log-btn dead-end" onClick={() => handleLogOutcome('disconnected')}>✕ Discon.</button>
-                    <button className="log-btn dead-end" onClick={() => handleLogOutcome('redirected')}>↗ Redir.</button>
-                  </div>
-                  <div className="outcome-log-row success-row">
-                    <button className="log-btn success" onClick={() => handleLogOutcome('meeting_set')}>✅ Meeting</button>
-                    <button className="log-btn success" onClick={() => handleLogOutcome('follow_up')}>📅 Follow Up</button>
-                    <button className="log-btn success" onClick={() => handleLogOutcome('send_info')}>📄 Info</button>
-                    <button className="log-btn success" onClick={() => handleLogOutcome('not_interested')}>🚫 No</button>
-                    <button className="log-btn success" onClick={() => handleLogOutcome('wrong_person')}>👥 Wrong</button>
-                  </div>
-                </div>
               </div>
             ) : (
               <div className="empty-state">
@@ -882,25 +865,6 @@ function App() {
                 <span>Waiting for call to start…</span>
               </div>
             )}
-
-            <div className="compact-controls">
-              <div className="compact-controls-left">
-                <button className="compact-ctrl-btn start" onClick={() => handleControl('start')} disabled={transcriptionState === 'recording'}>▶</button>
-                <button className="compact-ctrl-btn pause" onClick={() => handleControl('pause')} disabled={transcriptionState !== 'recording'}>⏸</button>
-                <button className="compact-ctrl-btn stop" onClick={() => handleControl('stop')} disabled={transcriptionState === 'idle'}>■</button>
-                <span className="compact-state-dot">
-                  {transcriptionState === 'recording' && deepgramState === 'streaming' && <span className="mini-dot active" />}
-                  {transcriptionState === 'recording' && deepgramState !== 'streaming' && <span className="mini-dot listening" />}
-                  {transcriptionState === 'paused' && <span className="mini-dot paused" />}
-                </span>
-              </div>
-              <div className="compact-controls-right">
-                {currentNode?.gatekeeperNodeId && (
-                  <button className="compact-quick-btn" onClick={() => handleNavigate(currentNode.gatekeeperNodeId!)} title="Gatekeeper">🛡</button>
-                )}
-                <button className="compact-quick-btn" onClick={handleResetAIContext} title="New Contact">👤</button>
-              </div>
-            </div>
           </>
         ) : view === "transcript" ? (
           <div className="transcript-view">
@@ -1001,6 +965,53 @@ function App() {
           </div>
         )}
       </div>
+
+      {/* Bottom-fixed controls — visible in script + transcript tabs */}
+      {view !== "actions" && (
+        <div className="bottom-fixed-section">
+          {showNextCall && (
+            <button className="next-call-btn" onClick={handleNextCall}>
+              ↩ Next Call
+            </button>
+          )}
+          <div className="outcome-log-section">
+            <div className="outcome-log-row dead-end-row">
+              <button className="log-btn dead-end" onClick={() => handleLogOutcome('no_answer')}>📵 No Answer</button>
+              <button className="log-btn dead-end" onClick={() => {
+                if (currentNode?.voicemailNodeId) handleNavigate(currentNode.voicemailNodeId);
+                handleLogOutcome('left_voicemail');
+              }}>📨 Voicemail</button>
+              <button className="log-btn dead-end" onClick={() => handleLogOutcome('disconnected')}>✕ Discon.</button>
+              <button className="log-btn dead-end" onClick={() => handleLogOutcome('redirected')}>↗ Redir.</button>
+            </div>
+            <div className="outcome-log-row success-row">
+              <button className="log-btn success" onClick={() => handleLogOutcome('meeting_set')}>✅ Meeting</button>
+              <button className="log-btn success" onClick={() => handleLogOutcome('follow_up')}>📅 Follow Up</button>
+              <button className="log-btn success" onClick={() => handleLogOutcome('send_info')}>📄 Info</button>
+              <button className="log-btn success" onClick={() => handleLogOutcome('not_interested')}>🚫 No</button>
+              <button className="log-btn success" onClick={() => handleLogOutcome('wrong_person')}>👥 Wrong</button>
+            </div>
+          </div>
+          <div className="compact-controls">
+            <div className="compact-controls-left">
+              <button className="compact-ctrl-btn start" onClick={() => handleControl('start')} disabled={transcriptionState === 'recording'}>▶</button>
+              <button className="compact-ctrl-btn pause" onClick={() => handleControl('pause')} disabled={transcriptionState !== 'recording'}>⏸</button>
+              <button className="compact-ctrl-btn stop" onClick={() => handleControl('stop')} disabled={transcriptionState === 'idle'}>■</button>
+              <span className="compact-state-dot">
+                {transcriptionState === 'recording' && deepgramState === 'streaming' && <span className="mini-dot active" />}
+                {transcriptionState === 'recording' && deepgramState !== 'streaming' && <span className="mini-dot listening" />}
+                {transcriptionState === 'paused' && <span className="mini-dot paused" />}
+              </span>
+            </div>
+            <div className="compact-controls-right">
+              {currentNode?.gatekeeperNodeId && (
+                <button className="compact-quick-btn" onClick={() => handleNavigate(currentNode.gatekeeperNodeId!)} title="Gatekeeper">🛡</button>
+              )}
+              <button className="compact-quick-btn" onClick={handleResetAIContext} title="New Contact">👤</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <footer className="overlay-footer">
         {updateVersion ? (

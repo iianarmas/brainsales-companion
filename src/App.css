@@ -513,6 +513,26 @@ body {
   color: var(--text-muted);
 }
 
+/* ── Bottom-fixed section (outcomes + controls) ─ */
+.bottom-fixed-section {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+  padding: 6px 8px;
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.bottom-fixed-section .outcome-log-section {
+  margin-bottom: 4px;
+}
+
+.bottom-fixed-section .compact-controls {
+  margin-top: 0;
+}
+
+.bottom-fixed-section .next-call-btn {
+  margin-bottom: 4px;
+}
+
 /* ── Footer ──────────────────────────────────── */
 .overlay-footer {
   border-top: 1px solid var(--border);
@@ -817,8 +837,15 @@ body {
 }
 
 .device-select option {
-  background: var(--bg);
-  color: var(--text);
+  background-color: #1e1e2e;
+  color: #e2e8f0;
+  padding: 4px 6px;
+}
+
+.device-select option:hover,
+.device-select option:checked {
+  background-color: #334155;
+  color: #f1f5f9;
 }
 
 .device-label-row {
@@ -1085,8 +1112,15 @@ body {
 }
 
 .flow-selector-select option {
-  background: rgba(var(--bg), 1);
-  color: var(--text);
+  background-color: #1e1e2e;
+  color: #e2e8f0;
+  padding: 4px 6px;
+}
+
+.flow-selector-select option:hover,
+.flow-selector-select option:checked {
+  background-color: #334155;
+  color: #f1f5f9;
 }
 
 /* ── AI Correction Picker ───────────────────── */
@@ -1191,34 +1225,6 @@ body {
 .ai-dismiss-btn:hover {
   background: var(--surface-hover);
   color: var(--text);
-}
-
-/* ── Co-Pilot button ────────────────────────────── */
-.copilot-btn {
-  font-size: 12px;
-  width: 24px;
-  height: 24px;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  background: var(--surface);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.15s;
-  -webkit-app-region: no-drag;
-  opacity: 0.6;
-}
-
-.copilot-btn:hover {
-  background: var(--surface-hover);
-  opacity: 1;
-}
-
-.copilot-btn.active {
-  background: rgba(129, 140, 248, 0.18);
-  border-color: rgba(129, 140, 248, 0.4);
-  opacity: 1;
 }
 
 /* ── Next Call button ───────────────────────────── */

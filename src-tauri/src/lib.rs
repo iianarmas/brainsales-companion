@@ -235,6 +235,11 @@ pub fn run() {
                 let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
             }
 
+            // Set window icon for taskbar
+            if let Some(icon) = app.default_window_icon().cloned() {
+                let _ = window.set_icon(icon);
+            }
+
             // Register global shortcuts
             use tauri_plugin_global_shortcut::GlobalShortcutExt;
             let _ = app.global_shortcut().register("ctrl+shift+b");
